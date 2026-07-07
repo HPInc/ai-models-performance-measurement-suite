@@ -10,7 +10,7 @@ results to disk for later analysis.
 
 High-level behavior
 -------------------
-- Discovers GGUF model files from specified directories and/or explicit paths.
+- Discovers GGUF model files from command line arguments.
 - Runs `llama-bench` across multiple llama.cpp installations in sequence.
 - Monitors system resources (RAM, CPU, GPU utilization and memory) during each
   benchmark run via the ResourceMonitor module.
@@ -218,14 +218,8 @@ def benchmark_models(parser_args) -> bool:
     is written to the output directory named with hostname, build, model, and
     options.
 
-    Args:
-        parser_args:
-            Namespace from ``argparse.parse_args()`` with fields:
-              - ``output_dir``: Output directory for benchmark results.
-              - ``gguf_dir``: Directory containing GGUF model files.
-              - ``model``: Optional model path(s) or filters.
-              - ``llamacpp_dir``: One or more llama.cpp install roots.
-              - ``extra_options``: Additional llama-bench option sets (strings).
+    Args: 
+        parser_args: Namespace from ``argparse.parse_args()``
 
     Returns:
         bool: True if at least one benchmark succeeded, False otherwise.
@@ -277,11 +271,12 @@ class _BenchmarkArgumentParser(BenchmarkArgumentParser):
         helplines.append(' ')
         helplines.append('EXAMPLES: ')
         helplines.append(' ')
-        helplines.append(r'  Run llama-bench from \llama-b6876-bin-win-vulkan-x64 over all ')
-        helplines.append(r'  gguf model files in \models. Disable flash attention for all ')
-        helplines.append(r'  runs and save json files in the \json\testrun directory:')
+        helplines.append(r'  Run llama-bench from \llama-b6876-bin-win-vulkan-x64 over ')
+        helplines.append(r'  \models\gpt-oss-20b.gguf. Disable flash attention for the ')
+        helplines.append(r'  first run,and enable it for the second run. Save the json ')
+        helplines.append(r'  files in the \json\testrun directory:')
         helplines.append(' ')
-        helplines.append(r'    python mass_llama_bench.py -g \models -l \llama-b6876-bin-win-vulkan-x64 -o \json\testrun -e "-fa 0"')  # pylint: disable=line-too-long
+        helplines.append(r'    python mass_llama_bench.py -m \models\gpt-oss-20b.gguf -l \llama-b6876-bin-win-vulkan-x64 -o \json\testrun -e "-fa 0" -e "-fa 1"')  # pylint: disable=line-too-long
         helplines.append('\n')
 
         return os.linesep.join(helplines)
