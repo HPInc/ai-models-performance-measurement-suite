@@ -35,7 +35,7 @@ Includes a general-purpose CLI resource monitor (`resource_monitor.py`), llama.c
 
 ### Required Software
 
-* **Python**: 3.10 or later
+* **Python**: 3.10 or later (platform-specific build required: x64 for Intel/AMD systems, ARM64 for ARM-based systems)
 * **Operating System**: Windows 10/11
 
 ### Required Python Packages
