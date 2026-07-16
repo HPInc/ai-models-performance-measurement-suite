@@ -12,11 +12,13 @@ High-level behavior
 - Iterates over llama.cpp installations (-l), models (-m), and server parameters (-s).
 - Launches llama-server with --embedding and the specified parameters, then captures the
   server URL.
-- For each server instance, iterates over benchmark_embeddings parameter sets (-e).
+- For each benchmark_embeddings parameter set (-e), starts a fresh llama-server
+  instance.
 - Runs benchmark_embeddings.py against the v1/embeddings endpoint with the specified
   parameters.
-- Monitors system resources (CPU, RAM, GPU) during each benchmark_embeddings run.
-- Shuts down llama-server after all benchmark runs for that configuration complete.
+- Monitors system resources (CPU, RAM, GPU) during server startup,
+  benchmark_embeddings.py, and server shutdown for each run.
+- Shuts down llama-server after each benchmark_embeddings run.
 - Saves JSON benchmark results with runtime_stats and convenience_metrics.
 
 Key design choices
@@ -490,23 +492,15 @@ def _extract_embeddings_convenience_metrics(
     return conv_metrics
 
 
-def _worker_benchmark_embeddings(
-    cmd: List[str],
+def _worker_server_and_benchmark_embeddings(
+    install_dir: str,
+    server_model: Optional[str],
+    base_server_options: List[str],
+    bench_options: List[str],
     verbose: bool,
     result_queue,
 ) -> None:
-    """
-    Run benchmark_embeddings.py in a child process and push results to a queue.
-
-    This worker is executed inside a ResourceMonitor child process so that
-    resource sampling runs concurrently with the benchmark.  The script output
-    is captured from stdout (JSON when --output-format json is used).
-
-    Args:
-        cmd: The complete command as a list of strings.
-        verbose: If True, echo subprocess output to the console.
-        result_queue: Queue to put the result dictionary into.
-    """
+    """Start llama-server, run benchmark_embeddings.py, then stop server."""
     import logging as _logging  # pylint: disable=import-outside-toplevel
     log_level = _logging.DEBUG if verbose else _logging.INFO
     _logging.basicConfig(
@@ -519,10 +513,47 @@ def _worker_benchmark_embeddings(
         'success': False,
         'stdout': '',
         'stderr': '',
-        'returncode': -1
+        'returncode': -1,
+        'reported_model': None
     }
 
+    server = LlamaServerProcess(
+        install_dir,
+        server_model,
+        base_server_options,
+        verbose=verbose
+    )
+
     try:
+        server_url = server.start()
+        if not server_url:
+            _logging.getLogger(__name__).error("Failed to start llama-server.")
+            result_queue.put(result)
+            return
+
+        reported_model = _query_server_model(server_url)
+        result['reported_model'] = reported_model
+
+        if not server_model and not reported_model:
+            _logging.getLogger(__name__).error(
+                "No model loaded on llama-server. When -m is omitted, "
+                "the model must be specified via -c, -s, or -j options."
+            )
+            result_queue.put(result)
+            return
+
+        embeddings_url = server_url.rstrip('/') + '/v1/embeddings'
+        cmd = [
+            sys.executable,
+            _BENCHMARK_EMBEDDINGS_SCRIPT,
+            '--endpoint-url', embeddings_url,
+            '--output-format', 'json',
+        ]
+        cmd.extend(bench_options)
+
+        _logging.getLogger(__name__).info(
+            "Running benchmark_embeddings.py command: %s", ' '.join(cmd))
+
         proc_result = subprocess.run(
             cmd,
             capture_output=True,
@@ -547,19 +578,22 @@ def _worker_benchmark_embeddings(
 
     except FileNotFoundError:
         _logging.getLogger(__name__).error(
-            "benchmark_embeddings script not found at: %s", cmd[1] if len(cmd) > 1 else '?')
+            "benchmark_embeddings script not found at: %s", _BENCHMARK_EMBEDDINGS_SCRIPT)
     except Exception as exc:  # pylint: disable=broad-except
-        _logging.getLogger(__name__).error("Failed to run benchmark_embeddings: %s", exc)
+        _logging.getLogger(__name__).error(
+            "Failed to run llama-server + benchmark_embeddings worker: %s", exc)
+    finally:
+        server.stop()
 
     result_queue.put(result)
 
 
 def run_benchmark_embeddings_with_monitoring(
-    server_url: str,
     bench_options: List[str],
     output_dir: str,
     hostname: str,
     install_dir: str,
+    base_server_options: List[str],
     server_model: Optional[str] = None,
     sample_interval: float = DEFAULT_SAMPLE_INTERVAL,
     server_options: Optional[List[str]] = None,
@@ -584,12 +618,11 @@ def run_benchmark_embeddings_with_monitoring(
     - ``system_info``: System information
 
     Args:
-        server_url: Base URL of the llama-server endpoint
-            (e.g., ``http://localhost:8080``).
         bench_options: Additional command-line options for benchmark_embeddings.py.
         output_dir: Directory to save benchmark results.
         hostname: Machine hostname for filenames.
         install_dir: Directory containing llama-server (for filename).
+        base_server_options: Full server options used for launching llama-server.
         server_model: Path to the GGUF model (for filename).
         sample_interval: Seconds between resource monitor samples.
         server_options: Variable server options used (from -s, for filename/options).
@@ -618,24 +651,18 @@ def run_benchmark_embeddings_with_monitoring(
     output_path = os.path.join(output_dir, output_filename)
     output_path = get_nonconflicting_output_path(output_path)
 
-    # Build the endpoint URL for the embeddings endpoint.
-    embeddings_url = server_url.rstrip('/') + '/v1/embeddings'
-
-    cmd = [
-        sys.executable,
-        _BENCHMARK_EMBEDDINGS_SCRIPT,
-        '--endpoint-url', embeddings_url,
-        '--output-format', 'json',
-    ]
-
-    cmd.extend(bench_options)
-
-    logger.info("Running benchmark_embeddings with monitoring: %s", ' '.join(cmd))
+    logger.info("Running llama-server + benchmark_embeddings with monitoring")
 
     try:
         worker_result, runtime_stats, system_info = ResourceMonitor.monitor_process(
-            worker_fn=_worker_benchmark_embeddings,
-            worker_args=(cmd, verbose),
+            worker_fn=_worker_server_and_benchmark_embeddings,
+            worker_args=(
+                install_dir,
+                server_model,
+                base_server_options,
+                bench_options,
+                verbose
+            ),
             sample_interval_s=sample_interval,
             normalize_resource_data=False
         )
@@ -659,7 +686,7 @@ def run_benchmark_embeddings_with_monitoring(
             return None
 
         # Extract convenience metrics.
-        reported_model = _query_server_model(server_url)
+        reported_model = worker_result.get('reported_model') if worker_result else None
         model_name = reported_model or (
             os.path.basename(server_model) if server_model else None)
 
@@ -762,51 +789,33 @@ def _run_benchmarks_for_server_config(
         if reset_environment:
             reset_benchmark_environment()
 
-        if check_existing_llama_server_running():
-            return written_json_files
-
-        with LlamaServerProcess(
-            install_dir,
-            server_model,
-            base_server_options,
-            verbose=verbose
-        ) as server:
-            if server.url is None:
-                logger.error("Failed to start llama-server, skipping this configuration.")
+        for extra_options in iter_option_sets(extra_bench_option_sets):
+            if check_existing_llama_server_running():
                 return written_json_files
 
-            if not server_model:
-                reported_model = _query_server_model(server.url)
-                if not reported_model:
-                    logger.error("No model loaded on llama-server. When -m is omitted, "
-                                 "the model must be specified via -c, -s, or -j options.")
-                    return written_json_files
-                logger.info("Server loaded model: %s", reported_model)
+            combined_bench_options = combine_options(fixed_bench_options, extra_options) or []
 
-            for extra_options in iter_option_sets(extra_bench_option_sets):
-                combined_bench_options = combine_options(fixed_bench_options, extra_options) or []
+            output_file = run_benchmark_embeddings_with_monitoring(
+                bench_options=combined_bench_options,
+                output_dir=output_dir,
+                hostname=hostname,
+                install_dir=install_dir,
+                base_server_options=base_server_options,
+                server_model=server_model,
+                sample_interval=sample_interval,
+                server_options=variable_server_options,
+                extra_bench_options=extra_options,
+                verbose=verbose,
+                power_mode_label=power_mode_label,
+                constant_server_options=effective_constant_server_options,
+                fixed_bench_options=fixed_bench_options,
+                description=description,
+                run_number=run_number,
+                total_runs=runs
+            )
 
-                output_file = run_benchmark_embeddings_with_monitoring(
-                    server_url=server.url,
-                    bench_options=combined_bench_options,
-                    output_dir=output_dir,
-                    hostname=hostname,
-                    install_dir=install_dir,
-                    server_model=server_model,
-                    sample_interval=sample_interval,
-                    server_options=variable_server_options,
-                    extra_bench_options=extra_options,
-                    verbose=verbose,
-                    power_mode_label=power_mode_label,
-                    constant_server_options=effective_constant_server_options,
-                    fixed_bench_options=fixed_bench_options,
-                    description=description,
-                    run_number=run_number,
-                    total_runs=runs
-                )
-
-                if output_file:
-                    written_json_files.append(output_file)
+            if output_file:
+                written_json_files.append(output_file)
 
     return written_json_files
 

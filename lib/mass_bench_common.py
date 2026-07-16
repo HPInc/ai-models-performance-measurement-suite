@@ -11,8 +11,6 @@ Contents
 - DEFAULT_SAMPLE_INTERVAL: Default sampling cadence for resource monitoring.
 - BenchmarkArgumentParser: argparse.ArgumentParser subclass with customized
   error/help behavior; scripts subclass to add their own examples.
-- worker_llama_benchy(): Subprocess worker for running llama-benchy inside
-  a ResourceMonitor child process.
 - extract_benchy_convenience_metrics(): Maps llama-benchy JSON output to the
   standard convenience_metrics dictionary.
 - parse_model_spec(): Splits a possibly comma-separated model specification
@@ -27,7 +25,6 @@ import argparse
 import json as _json
 import logging
 import platform
-import subprocess
 import sys
 import urllib.request
 
@@ -51,70 +48,6 @@ class BenchmarkArgumentParser(argparse.ArgumentParser):
         sys.stderr.write(f'\nerror: {message}\n\n')
         self.print_usage(sys.stderr)
         sys.exit(2)
-
-
-def worker_llama_benchy(
-    cmd: List[str],
-    temp_output_path: str,
-    verbose: bool,
-    result_queue: "Any",
-) -> None:
-    """
-    Run llama-benchy in a child process and push results to a queue.
-
-    This worker function is executed in a separate process to allow
-    ResourceMonitor to sample resource usage concurrently.  The llama-benchy
-    JSON output is written to a temporary file via --save-result.
-
-    Args:
-        cmd: The complete llama-benchy command as a list of strings.
-        temp_output_path: Path where llama-benchy writes its JSON output.
-        verbose: If True, echo subprocess output to console.
-        result_queue: Queue to put the result dictionary into.
-    """
-    # Configure logging in the child process
-    log_level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
-        force=True
-    )
-
-    result: Dict[str, Any] = {
-        'success': False,
-        'temp_output_path': temp_output_path,
-        'stdout': '',
-        'stderr': '',
-        'returncode': -1
-    }
-
-    try:
-        proc_result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False
-        )
-
-        result['stdout'] = proc_result.stdout
-        result['stderr'] = proc_result.stderr
-        result['returncode'] = proc_result.returncode
-
-        if proc_result.returncode == 0:
-            result['success'] = True
-            if verbose:
-                logger.debug("llama-benchy stdout: %s", proc_result.stdout)
-        else:
-            logger.error("llama-benchy failed with return code %d", proc_result.returncode)
-            logger.error("stdout: %s", proc_result.stdout)
-            logger.error("stderr: %s", proc_result.stderr)
-
-    except FileNotFoundError:
-        logger.error("llama-benchy not found. Ensure it is installed and in PATH.")
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error("Failed to run llama-benchy: %s", exc)
-
-    result_queue.put(result)
 
 
 def extract_benchy_convenience_metrics(

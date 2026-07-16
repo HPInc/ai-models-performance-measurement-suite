@@ -177,7 +177,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 
 ### Mass LLaMA Server Benchy
 
-`mass_llama_server_benchy.py` orchestrates running `llama-server` and `llama-benchy` across multiple llama.cpp installations, LLM models, server configurations, and llama-benchy parameter sets. It manages the llama-server lifecycle (start, capture URL, shutdown) and monitors system resources during each benchmark run.
+`mass_llama_server_benchy.py` orchestrates running `llama-server` and `llama-benchy` across multiple llama.cpp installations, LLM models, server configurations, and llama-benchy parameter sets. It manages the llama-server lifecycle (start, capture URL, shutdown) for each benchmark run and monitors system resources during each run.
 
 #### Runtime Prerequisites
 
@@ -196,8 +196,8 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 
 * `-l, --llamacpp-dir`: Path to llama.cpp installation directory containing llama-server (default: current working directory; can be specified multiple times)
 * `-c, --constant-server-parms`: Options to pass to llama-server for all runs, quoted. Only one `-c` parameter is allowed.
-* `-s, --server-parms`: Additional options to pass to llama-server, quoted. Multiple `-s` parameters create separate server instances.
-* `-e, --extra-options`: Additional options to pass to llama-benchy, quoted (can be specified multiple times to create separate runs)
+* `-s, --server-parms`: Additional options to pass to llama-server, quoted. Multiple `-s` parameters create separate server-option configurations.
+* `-e, --extra-options`: Additional options to pass to llama-benchy, quoted (can be specified multiple times to create separate runs; each run starts and stops a fresh llama-server instance)
 * `-f, --fixed-options`: Fixed options to pass to llama-benchy for all runs, quoted. Only one `-f` parameter is allowed.
 * `-j, --joint-options`: Combined server and benchy options in one string, separated by a comma. The part before the comma is passed to llama-server; the part after the comma is passed to llama-benchy. If no comma is present, the entire string is treated as llama-benchy options. Multiple `-j` parameters create separate benchmark runs. Example: `-j "-ngl 99,--pp 128"`
 * `-i, --sample-interval`: Seconds between resource monitoring samples (default: 0.2)
@@ -239,7 +239,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 
 ### Mass Benchmark Embeddings
 
-`mass_benchmark_embeddings.py` orchestrates running `llama-server` and `benchmark_embeddings.py` across multiple models and server/benchmark option sets. It manages the llama-server lifecycle, targets the `/v1/embeddings` endpoint, and records resource monitoring data for each run.
+`mass_benchmark_embeddings.py` orchestrates running `llama-server` and `benchmark_embeddings.py` across multiple models and server/benchmark option sets. It manages the llama-server lifecycle for each benchmark run, targets the `/v1/embeddings` endpoint, and records resource monitoring data for each run.
 
 #### Runtime Prerequisites
 
@@ -257,8 +257,8 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 
 * `-l, --llamacpp-dir`: Path to llama.cpp installation directory containing llama-server.exe (default: current working directory; can be specified multiple times)
 * `-c, --constant-server-parms`: Options to pass to llama-server for all runs, quoted. Only one `-c` parameter is allowed.
-* `-s, --server-parms`: Additional options to pass to llama-server, quoted. Multiple `-s` parameters create separate server instances.
-* `-e, --extra-options`: Additional options to pass to `benchmark_embeddings.py`, quoted (can be specified multiple times to create separate runs)
+* `-s, --server-parms`: Additional options to pass to llama-server, quoted. Multiple `-s` parameters create separate server-option configurations.
+* `-e, --extra-options`: Additional options to pass to `benchmark_embeddings.py`, quoted (can be specified multiple times to create separate runs; each run starts and stops a fresh llama-server instance)
 * `-f, --fixed-options`: Fixed options to pass to `benchmark_embeddings.py` for all runs, quoted. Only one `-f` parameter is allowed.
 * `-j, --joint-options`: Combined server and benchmark options in one string, separated by a comma. The part before the comma is passed to llama-server; the part after the comma is passed to `benchmark_embeddings.py`. If no comma is present, the entire string is treated as benchmark options. Multiple `-j` parameters create separate benchmark runs. Example: `-j "-ngl 99,--samples 1000"`
 * `-i, --sample-interval`: Seconds between resource monitoring samples (default: 0.2)
@@ -296,7 +296,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 
 ### Mass Lemonade Benchy
 
-`mass_lemonade_benchy.py` orchestrates running `lemonade-server` and `llama-benchy` across multiple models, server configurations, and llama-benchy parameter sets. It manages the lemonade server lifecycle (load model, run benchmarks, unload model) and monitors system resources including NPU memory during each benchmark run.
+`mass_lemonade_benchy.py` orchestrates running `lemonade-server` and `llama-benchy` across multiple models, server configurations, and llama-benchy parameter sets. It manages the lemonade model lifecycle (load model, run benchmark, unload model) for each benchmark run and monitors system resources including NPU memory during each run.
 
 #### Runtime Prerequisites
 

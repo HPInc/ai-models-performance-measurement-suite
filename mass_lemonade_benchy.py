@@ -10,11 +10,12 @@ High-level behavior
 -------------------
 - Checks that lemonade server is reachable via ``lemonade status``.
 - Iterates over models (-m) and server parameter sets (-s).
-- Loads each model into lemonade server with the specified parameters.
-- For each loaded model, iterates over llama-benchy parameter sets (-e).
+- For each llama-benchy parameter set (-e), loads the model with the specified
+  parameters.
 - Runs llama-benchy against the lemonade endpoint with the specified parameters.
-- Monitors system resources (CPU, RAM, GPU) during each llama-benchy run.
-- Unloads the model from lemonade server after all llama-benchy runs complete.
+- Monitors system resources (CPU, RAM, GPU) during model load, llama-benchy,
+  and model unload for each run.
+- Unloads the model from lemonade server after each llama-benchy run.
 - Saves JSON benchmark results with runtime_stats and convenience_metrics.
 
 Key design choices
@@ -24,7 +25,7 @@ Key design choices
 - Models are loaded via ``lemonade load`` and unloaded via ``lemonade unload``.
 - If a model is already loaded, the load command succeeds without error.
 - Constant server parameters via ``-c`` are applied to all ``lemonade load`` calls.
-- Server parameters via ``-s`` create separate load/unload cycles for iteration.
+- Server parameters via ``-s`` create separate per-run load/unload cycles.
 - Model parameter (-m) supports comma-separated pairs: first for server, second
   for benchy.
 - Resource monitoring via ResourceMonitor captures CPU, RAM, and GPU usage.
@@ -124,7 +125,6 @@ try:
         BenchmarkArgumentParser,
         POWER_MODE_SHORT,
         iter_power_modes as _iter_power_modes,
-        worker_llama_benchy as _worker_llama_benchy,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
         parse_model_spec,
@@ -326,16 +326,97 @@ def _build_output_filename(
 # (as extract_benchy_convenience_metrics) and aliased above.
 
 
-# _worker_llama_benchy is imported from mass_bench_common
-# (as worker_llama_benchy) and aliased above.
+def _worker_load_run_unload_lemonade_benchy(
+    host: str,
+    port: int,
+    server_model: str,
+    all_server_options: List[str],
+    benchy_model: Optional[str],
+    benchy_options: List[str],
+    temp_output_path: str,
+    verbose: bool,
+    result_queue,
+) -> None:
+    """Load model, run llama-benchy, unload model, and publish worker result."""
+    import logging as _logging  # pylint: disable=import-outside-toplevel
+
+    log_level = _logging.DEBUG if verbose else _logging.INFO
+    _logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
+        force=True
+    )
+
+    result = {
+        'success': False,
+        'temp_output_path': temp_output_path,
+        'stdout': '',
+        'stderr': '',
+        'returncode': -1,
+        'reported_model': None
+    }
+
+    model_loaded = False
+    server_url = 'http://%s:%d/api/v1' % (host, port)
+
+    try:
+        if not load_lemonade_model(server_model, all_server_options, host, port):
+            _logging.getLogger(__name__).error(
+                "Failed to load model '%s' for benchmark run.", server_model)
+            result_queue.put(result)
+            return
+
+        model_loaded = True
+        result['reported_model'] = _query_server_model(server_url)
+
+        cmd = ['llama-benchy', '--base-url', server_url, '--format', 'json',
+               '--save-result', temp_output_path]
+        if benchy_model:
+            cmd.extend(['--model', benchy_model])
+        cmd.extend(benchy_options)
+
+        _logging.getLogger(__name__).info("Running llama-benchy command: %s", ' '.join(cmd))
+
+        proc_result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        result['stdout'] = proc_result.stdout
+        result['stderr'] = proc_result.stderr
+        result['returncode'] = proc_result.returncode
+
+        if proc_result.returncode == 0:
+            result['success'] = True
+            if verbose:
+                _logging.getLogger(__name__).debug("llama-benchy stdout: %s", proc_result.stdout)
+        else:
+            _logging.getLogger(__name__).error(
+                "llama-benchy failed with return code %d", proc_result.returncode)
+            _logging.getLogger(__name__).error("stdout: %s", proc_result.stdout)
+            _logging.getLogger(__name__).error("stderr: %s", proc_result.stderr)
+    except FileNotFoundError:
+        _logging.getLogger(__name__).error("llama-benchy not found. Ensure it is installed and in PATH.")
+    except Exception as exc:  # pylint: disable=broad-except
+        _logging.getLogger(__name__).error(
+            "Failed to run lemonade load+bench+unload worker: %s", exc)
+    finally:
+        if model_loaded:
+            unload_lemonade_model(server_model, host, port)
+
+    result_queue.put(result)
 
 
 def run_llama_benchy_with_monitoring(
-    server_url: str,
     benchy_model: Optional[str],
     benchy_options: List[str],
     output_dir: str,
     hostname: str,
+    host: str,
+    port: int,
+    all_server_options: List[str],
     server_model: str,
     sample_interval: float = DEFAULT_SAMPLE_INTERVAL,
     server_options: Optional[List[str]] = None,
@@ -357,11 +438,13 @@ def run_llama_benchy_with_monitoring(
     - runtime_stats: Resource monitoring data
 
     Args:
-        server_url: URL of the lemonade server endpoint.
         benchy_model: Optional model name to pass to llama-benchy.
         benchy_options: Additional command-line options for llama-benchy.
         output_dir: Directory to save benchmark results.
         hostname: Machine hostname for filename.
+        host: Lemonade server host address.
+        port: Lemonade server port number.
+        all_server_options: Full server options used for lemonade load.
         server_model: Model name loaded into lemonade server (for filename).
         sample_interval: Seconds between resource monitor samples.
         server_options: Variable server options used (from -s, for filename/options).
@@ -393,22 +476,21 @@ def run_llama_benchy_with_monitoring(
     os.close(temp_fd)  # Close the file descriptor; llama-benchy will write to it
 
     try:
-        # Construct the llama-benchy command with --save-result to temp file
-        cmd = ['llama-benchy', '--base-url', server_url, '--format', 'json',
-               '--save-result', temp_output_path]
+        logger.info("Running lemonade load + llama-benchy + unload with monitoring")
 
-        if benchy_model:
-            cmd.extend(['--model', benchy_model])
-
-        # Add user-specified options
-        cmd.extend(benchy_options)
-
-        logger.info("Running llama-benchy with monitoring: %s", ' '.join(cmd))
-
-        # Run llama-benchy with resource monitoring
+        # Run model load + llama-benchy + unload with resource monitoring
         worker_result, runtime_stats, system_info = ResourceMonitor.monitor_process(
-            worker_fn=_worker_llama_benchy,
-            worker_args=(cmd, temp_output_path, verbose),
+            worker_fn=_worker_load_run_unload_lemonade_benchy,
+            worker_args=(
+                host,
+                port,
+                server_model,
+                all_server_options,
+                benchy_model,
+                benchy_options,
+                temp_output_path,
+                verbose
+            ),
             sample_interval_s=sample_interval,
             normalize_resource_data=False
         )
@@ -439,8 +521,8 @@ def run_llama_benchy_with_monitoring(
         )
         conv_metrics['variant'] = extract_variant_number_from_path(output_path)
 
-        # Query the server for its actual model name
-        reported_model = _query_server_model(server_url)
+        # Use model reported while the model was loaded in the worker.
+        reported_model = worker_result.get('reported_model') if worker_result else None
         if reported_model:
             conv_metrics['model'] = reported_model
 
@@ -495,9 +577,9 @@ def _run_benchmarks_for_server_config(
     """
     Run all llama-benchy configurations for a single server configuration.
 
-    Loads the model into lemonade server with the combined constant and
-    variable server options, runs all benchy option sets, then unloads
-    the model.
+    For each benchy option set, loads the model into lemonade server with the
+    combined constant and variable server options, runs llama-benchy, then
+    unloads the model.
 
     Args:
         server_model: Model name for lemonade server.
@@ -527,41 +609,31 @@ def _run_benchmarks_for_server_config(
     if reset_environment:
         reset_benchmark_environment()
 
-    # Load the model into lemonade server
-    if not load_lemonade_model(server_model, all_server_options, host, port):
-        logger.error("Failed to load model '%s', skipping this configuration.",
-                     server_model)
-        return written_json_files
+    # Iterate over all llama-benchy option sets; each run does its own model load/unload.
+    for extra_options in iter_option_sets(extra_benchy_option_sets):
+        combined_benchy_options = combine_options(fixed_benchy_options, extra_options) or []
 
-    server_url = 'http://%s:%d/api/v1' % (host, port)
+        output_file = run_llama_benchy_with_monitoring(
+            benchy_model=benchy_model,
+            benchy_options=combined_benchy_options,
+            output_dir=output_dir,
+            hostname=hostname,
+            host=host,
+            port=port,
+            all_server_options=all_server_options,
+            server_model=server_model,
+            sample_interval=sample_interval,
+            server_options=variable_server_options,
+            extra_benchy_options=extra_options,
+            verbose=verbose,
+            power_mode_label=power_mode_label,
+            constant_server_options=constant_server_options,
+            fixed_benchy_options=fixed_benchy_options,
+            description=description
+        )
 
-    try:
-        # Iterate over all llama-benchy option sets
-        for extra_options in iter_option_sets(extra_benchy_option_sets):
-            combined_benchy_options = combine_options(fixed_benchy_options, extra_options) or []
-
-            output_file = run_llama_benchy_with_monitoring(
-                server_url=server_url,
-                benchy_model=benchy_model,
-                benchy_options=combined_benchy_options,
-                output_dir=output_dir,
-                hostname=hostname,
-                server_model=server_model,
-                sample_interval=sample_interval,
-                server_options=variable_server_options,
-                extra_benchy_options=extra_options,
-                verbose=verbose,
-                power_mode_label=power_mode_label,
-                constant_server_options=constant_server_options,
-                fixed_benchy_options=fixed_benchy_options,
-                description=description
-            )
-
-            if output_file:
-                written_json_files.append(output_file)
-    finally:
-        # Always unload the model when done with this configuration
-        unload_lemonade_model(server_model, host, port)
+        if output_file:
+            written_json_files.append(output_file)
 
     return written_json_files
 

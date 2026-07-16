@@ -11,10 +11,11 @@ High-level behavior
 -------------------
 - Iterates over llama.cpp installations (-l), models (-m), and server parameters (-s).
 - Launches llama-server with the specified parameters and captures the server URL.
-- For each server instance, iterates over llama-benchy parameter sets (-e).
-- Runs llama-benchy against the server endpoint with the specified parameters.
-- Monitors system resources (CPU, RAM, GPU) during each llama-benchy run.
-- Shuts down llama-server after all llama-benchy runs for that configuration complete.
+- For each llama-benchy parameter set (-e), starts a fresh llama-server instance.
+- Runs llama-benchy against that server endpoint with the specified parameters.
+- Monitors system resources (CPU, RAM, GPU) during server startup, llama-benchy,
+  and server shutdown for each run.
+- Shuts down llama-server after each llama-benchy run.
 - Saves JSON benchmark results with runtime_stats and convenience_metrics.
 
 Key design choices
@@ -131,7 +132,6 @@ try:
         BenchmarkArgumentParser,
         POWER_MODE_SHORT,
         iter_power_modes as _iter_power_modes,
-        worker_llama_benchy as _worker_llama_benchy,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
         parse_model_spec,
@@ -431,17 +431,105 @@ def _build_output_filename(
 # (as extract_benchy_convenience_metrics) and aliased above.
 
 
-# _worker_llama_benchy is imported from mass_bench_common
-# (as worker_llama_benchy) and aliased above.
+def _worker_server_and_llama_benchy(
+    install_dir: str,
+    server_model: Optional[str],
+    all_server_options: List[str],
+    benchy_model: Optional[str],
+    benchy_options: List[str],
+    temp_output_path: str,
+    verbose: bool,
+    result_queue,
+) -> None:
+    """Start llama-server, run llama-benchy, stop server, and publish result."""
+    import logging as _logging  # pylint: disable=import-outside-toplevel
+    log_level = _logging.DEBUG if verbose else _logging.INFO
+    _logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
+        force=True
+    )
+
+    result = {
+        'success': False,
+        'temp_output_path': temp_output_path,
+        'stdout': '',
+        'stderr': '',
+        'returncode': -1,
+        'reported_model': None
+    }
+
+    server = LlamaServerProcess(
+        install_dir,
+        server_model,
+        all_server_options,
+        verbose=verbose
+    )
+
+    try:
+        server_url = server.start()
+        if not server_url:
+            _logging.getLogger(__name__).error("Failed to start llama-server.")
+            result_queue.put(result)
+            return
+
+        reported_model = _query_server_model(server_url)
+        result['reported_model'] = reported_model
+
+        if not server_model and not reported_model:
+            _logging.getLogger(__name__).error(
+                "No model loaded on llama-server. When -m is omitted, "
+                "the model must be specified via -c, -s, or -j options."
+            )
+            result_queue.put(result)
+            return
+
+        cmd = ['llama-benchy', '--base-url', server_url, '--format', 'json',
+               '--save-result', temp_output_path]
+        if benchy_model:
+            cmd.extend(['--model', benchy_model])
+        cmd.extend(benchy_options)
+
+        _logging.getLogger(__name__).info("Running llama-benchy command: %s", ' '.join(cmd))
+
+        proc_result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        result['stdout'] = proc_result.stdout
+        result['stderr'] = proc_result.stderr
+        result['returncode'] = proc_result.returncode
+
+        if proc_result.returncode == 0:
+            result['success'] = True
+            if verbose:
+                _logging.getLogger(__name__).debug("llama-benchy stdout: %s", proc_result.stdout)
+        else:
+            _logging.getLogger(__name__).error(
+                "llama-benchy failed with return code %d", proc_result.returncode)
+            _logging.getLogger(__name__).error("stdout: %s", proc_result.stdout)
+            _logging.getLogger(__name__).error("stderr: %s", proc_result.stderr)
+
+    except FileNotFoundError:
+        _logging.getLogger(__name__).error("llama-benchy not found. Ensure it is installed and in PATH.")
+    except Exception as exc:  # pylint: disable=broad-except
+        _logging.getLogger(__name__).error("Failed to run llama-server + llama-benchy worker: %s", exc)
+    finally:
+        server.stop()
+
+    result_queue.put(result)
 
 
 def run_llama_benchy_with_monitoring(
-    server_url: str,
     benchy_model: Optional[str],
     benchy_options: List[str],
     output_dir: str,
     hostname: str,
     install_dir: str,
+    all_server_options: List[str],
     server_model: Optional[str] = None,
     sample_interval: float = DEFAULT_SAMPLE_INTERVAL,
     server_options: Optional[List[str]] = None,
@@ -465,12 +553,12 @@ def run_llama_benchy_with_monitoring(
     - runtime_stats: Resource monitoring data
 
     Args:
-        server_url: URL of the llama-server endpoint.
         benchy_model: Optional model name to pass to llama-benchy.
         benchy_options: Additional command-line options for llama-benchy.
         output_dir: Directory to save benchmark results.
         hostname: Machine hostname for filenames.
         install_dir: Directory containing llama-server (for filename).
+        all_server_options: Full server options used for launching llama-server.
         server_model: Path to the GGUF model (for filename).
         sample_interval: Seconds between resource monitor samples.
         server_options: Variable server options used (from -s, for filename/options).
@@ -505,22 +593,20 @@ def run_llama_benchy_with_monitoring(
     os.close(temp_fd)  # Close the file descriptor; llama-benchy will write to it
 
     try:
-        # Construct the llama-benchy command with --save-result to temp file
-        cmd = ['llama-benchy', '--base-url', server_url, '--format', 'json',
-               '--save-result', temp_output_path]
+        logger.info("Running llama-server + llama-benchy with monitoring")
 
-        if benchy_model:
-            cmd.extend(['--model', benchy_model])
-
-        # Add user-specified options
-        cmd.extend(benchy_options)
-
-        logger.info("Running llama-benchy with monitoring: %s", ' '.join(cmd))
-
-        # Run llama-benchy with resource monitoring
+        # Run llama-server + llama-benchy with resource monitoring
         worker_result, runtime_stats, system_info = ResourceMonitor.monitor_process(
-            worker_fn=_worker_llama_benchy,
-            worker_args=(cmd, temp_output_path, verbose),
+            worker_fn=_worker_server_and_llama_benchy,
+            worker_args=(
+                install_dir,
+                server_model,
+                all_server_options,
+                benchy_model,
+                benchy_options,
+                temp_output_path,
+                verbose
+            ),
             sample_interval_s=sample_interval,
             normalize_resource_data=False
         )
@@ -553,8 +639,8 @@ def run_llama_benchy_with_monitoring(
             conv_metrics['runs'] = f'Run #{run_number}'
         conv_metrics['variant'] = extract_variant_number_from_path(output_path)
 
-        # Query the server for its actual model name
-        reported_model = _query_server_model(server_url)
+        # Use model reported while server was running.
+        reported_model = worker_result.get('reported_model') if worker_result else None
         if reported_model:
             conv_metrics['model'] = reported_model
 
@@ -653,54 +739,35 @@ def _run_benchmarks_for_server_config(
         if reset_environment:
             reset_benchmark_environment()
 
-        # Start llama-server with this configuration
-        if check_existing_llama_server_running():
-            return written_json_files
-        with LlamaServerProcess(
-            install_dir,
-            server_model,
-            all_server_options,
-            verbose=verbose
-        ) as server:
-            if server.url is None:
-                logger.error("Failed to start llama-server, skipping this configuration.")
+        # Iterate over all llama-benchy option sets and run with per-benchmark server lifecycle.
+        for extra_options in iter_option_sets(extra_benchy_option_sets):
+            if check_existing_llama_server_running():
                 return written_json_files
 
-            # If no explicit model was provided, verify the server loaded one
-            if not server_model:
-                reported_model = _query_server_model(server.url)
-                if not reported_model:
-                    logger.error("No model loaded on llama-server. When -m is omitted, "
-                                 "the model must be specified via -c, -s, or -j options.")
-                    return written_json_files
-                logger.info("Server loaded model: %s", reported_model)
+            combined_benchy_options = combine_options(fixed_benchy_options, extra_options) or []
 
-            # Iterate over all llama-benchy option sets
-            for extra_options in iter_option_sets(extra_benchy_option_sets):
-                combined_benchy_options = combine_options(fixed_benchy_options, extra_options) or []
+            output_file = run_llama_benchy_with_monitoring(
+                benchy_model=benchy_model,
+                benchy_options=combined_benchy_options,
+                output_dir=output_dir,
+                hostname=hostname,
+                install_dir=install_dir,
+                all_server_options=all_server_options,
+                server_model=server_model,
+                sample_interval=sample_interval,
+                server_options=variable_server_options,
+                extra_benchy_options=extra_options,
+                verbose=verbose,
+                power_mode_label=power_mode_label,
+                constant_server_options=effective_constant_server_options,
+                fixed_benchy_options=fixed_benchy_options,
+                description=description,
+                run_number=run_number,
+                total_runs=runs
+            )
 
-                output_file = run_llama_benchy_with_monitoring(
-                    server_url=server.url,
-                    benchy_model=benchy_model,
-                    benchy_options=combined_benchy_options,
-                    output_dir=output_dir,
-                    hostname=hostname,
-                    install_dir=install_dir,
-                    server_model=server_model,
-                    sample_interval=sample_interval,
-                    server_options=variable_server_options,
-                    extra_benchy_options=extra_options,
-                    verbose=verbose,
-                    power_mode_label=power_mode_label,
-                    constant_server_options=effective_constant_server_options,
-                    fixed_benchy_options=fixed_benchy_options,
-                    description=description,
-                    run_number=run_number,
-                    total_runs=runs
-                )
-
-                if output_file:
-                    written_json_files.append(output_file)
+            if output_file:
+                written_json_files.append(output_file)
 
     return written_json_files
 
