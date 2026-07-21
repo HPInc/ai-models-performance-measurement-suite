@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 import textwrap
 
@@ -115,7 +116,6 @@ try:
         BenchmarkArgumentParser,
         POWER_MODE_SHORT,
         iter_power_modes as _iter_power_modes,
-        worker_llama_benchy as _worker_llama_benchy,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
         setup_logging,
@@ -202,8 +202,58 @@ def _build_output_filename(
 # (as extract_benchy_convenience_metrics) and aliased above.
 
 
-# _worker_llama_benchy is imported from mass_bench_common
-# (as worker_llama_benchy) and aliased above.
+def _worker_llama_benchy(
+    cmd: List[str],
+    temp_output_path: str,
+    verbose: bool,
+    result_queue,
+) -> None:
+    """Run llama-benchy in a child process and push results to a queue."""
+    import logging as _logging  # pylint: disable=import-outside-toplevel
+
+    log_level = _logging.DEBUG if verbose else _logging.INFO
+    _logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
+        force=True
+    )
+
+    result = {
+        'success': False,
+        'temp_output_path': temp_output_path,
+        'stdout': '',
+        'stderr': '',
+        'returncode': -1
+    }
+
+    try:
+        _logging.getLogger(__name__).info("Running llama-benchy command: %s", ' '.join(cmd))
+
+        proc_result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        result['stdout'] = proc_result.stdout
+        result['stderr'] = proc_result.stderr
+        result['returncode'] = proc_result.returncode
+
+        if proc_result.returncode == 0:
+            result['success'] = True
+            if verbose:
+                logger.debug("llama-benchy stdout: %s", proc_result.stdout)
+        else:
+            logger.error("llama-benchy failed with return code %d", proc_result.returncode)
+            logger.error("stdout: %s", proc_result.stdout)
+            logger.error("stderr: %s", proc_result.stderr)
+    except FileNotFoundError:
+        logger.error("llama-benchy not found. Ensure it is installed and in PATH.")
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("Failed to run llama-benchy: %s", exc)
+
+    result_queue.put(result)
 
 
 def run_llama_benchy_with_monitoring(
