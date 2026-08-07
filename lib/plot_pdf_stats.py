@@ -154,6 +154,22 @@ def _tight_layout_with_auto_expand(
     )
 
 
+def _expand_horizontal_bar_plot_width(
+    fig,
+    left_margin: float,
+    right_margin: float = 0.99,
+    min_plot_fraction: float = 0.62
+) -> None:
+    """Expand figure width when needed so horizontal bar plot area fills the page."""
+    plot_fraction = max(0.05, right_margin - left_margin)
+    if plot_fraction < min_plot_fraction:
+        width_in, height_in = fig.get_size_inches()
+        width_scale = min_plot_fraction / plot_fraction
+        fig.set_size_inches(width_in * width_scale, height_in, forward=True)
+
+    fig.subplots_adjust(left=left_margin, right=right_margin)
+
+
 def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
     """
     Generate a single metric plot and save it as a PDF.
@@ -829,7 +845,10 @@ def generate_bar_chart(datasets: List[DatasetInfo], config: BarChartConfig) -> b
         fig, ax = pyplot.subplots(figsize=(10, max(4, len(valid_datasets) * 0.6)))
         _render_pdf_bar_chart(ax, valid_datasets, values, config, differential_labels, stddev_values)
         _tight_layout_with_auto_expand(fig)
-        fig.subplots_adjust(left=_pdf_left_margin_for_labels(differential_labels))
+        _expand_horizontal_bar_plot_width(
+            fig,
+            left_margin=_pdf_left_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(config.output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved bar chart to %s", config.output_path)
@@ -1377,7 +1396,7 @@ def generate_combined_performance_pdf(
             _render_pdf_bar_chart(ax, valid_ds, values, config, differential_labels, stddev_values)
 
         _tight_layout_with_auto_expand(fig)
-        fig.subplots_adjust(left=left_margin)
+        _expand_horizontal_bar_plot_width(fig, left_margin=left_margin)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved combined performance chart to %s", output_path)
@@ -1561,7 +1580,7 @@ def generate_embeddings_combined_performance_pdf(
             _render_pdf_bar_chart(ax, valid_ds, values, config, differential_labels, stddev_values)
 
         _tight_layout_with_auto_expand(fig)
-        fig.subplots_adjust(left=left_margin)
+        _expand_horizontal_bar_plot_width(fig, left_margin=left_margin)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved embeddings combined performance chart to %s", output_path)
