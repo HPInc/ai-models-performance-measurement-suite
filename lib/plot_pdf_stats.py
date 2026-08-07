@@ -161,13 +161,33 @@ def _expand_horizontal_bar_plot_width(
     min_plot_fraction: float = 0.62
 ) -> None:
     """Expand figure width when needed so horizontal bar plot area fills the page."""
-    plot_fraction = max(0.05, right_margin - left_margin)
+    _expand_plot_width_to_page(
+        fig,
+        left_margin=left_margin,
+        right_margin=right_margin,
+        min_plot_fraction=min_plot_fraction,
+    )
+
+
+def _expand_plot_width_to_page(
+    fig,
+    left_margin: Optional[float] = None,
+    right_margin: float = 0.99,
+    bottom_margin: Optional[float] = None,
+    min_plot_fraction: float = 0.62,
+) -> None:
+    """Expand figure width as needed, then apply subplot margins."""
+    subplot_params = fig.subplotpars
+    resolved_left = subplot_params.left if left_margin is None else left_margin
+    resolved_bottom = subplot_params.bottom if bottom_margin is None else bottom_margin
+
+    plot_fraction = max(0.05, right_margin - resolved_left)
     if plot_fraction < min_plot_fraction:
         width_in, height_in = fig.get_size_inches()
         width_scale = min_plot_fraction / plot_fraction
         fig.set_size_inches(width_in * width_scale, height_in, forward=True)
 
-    fig.subplots_adjust(left=left_margin, right=right_margin)
+    fig.subplots_adjust(left=resolved_left, right=right_margin, bottom=resolved_bottom)
 
 
 def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
@@ -244,6 +264,7 @@ def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
 
         # Tight layout and save
         _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(fig)
         pyplot.savefig(config.output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -431,6 +452,7 @@ def generate_combined_pdf_plot(
         _render_combined_subplots(axes, stats, available_metrics, benchmark_duration_s, subtitle)
 
         _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(fig)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -594,6 +616,7 @@ def generate_overlay_combined_plot(          # pylint: disable=too-many-locals
                          ha='center', va='bottom')
 
         _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(fig)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -704,6 +727,7 @@ def generate_overlay_pdf_plots(             # pylint: disable=too-many-locals
             fig, ax = pyplot.subplots(figsize=(12, 6))
             _render_single_overlay_plot(ax, datasets, config)
             _tight_layout_with_auto_expand(fig)
+            _expand_plot_width_to_page(fig)
             pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
             pyplot.close(fig)
             logger.info("Saved overlay plot to %s", output_path)
@@ -946,7 +970,10 @@ def generate_memory_usage_bar_chart_pdf(
         ax.legend(loc='upper left')
 
         _tight_layout_with_auto_expand(fig)
-        fig.subplots_adjust(bottom=_pdf_bottom_margin_for_labels(differential_labels))
+        _expand_plot_width_to_page(
+            fig,
+            bottom_margin=_pdf_bottom_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved memory usage bar chart to %s", output_path)
@@ -1043,7 +1070,10 @@ def generate_gpu_memory_usage_bar_chart_pdf(
         ax.legend(loc='upper left')
 
         _tight_layout_with_auto_expand(fig)
-        fig.subplots_adjust(bottom=_pdf_bottom_margin_for_labels(differential_labels))
+        _expand_plot_width_to_page(
+            fig,
+            bottom_margin=_pdf_bottom_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved GPU memory usage bar chart to %s", output_path)
@@ -1141,7 +1171,10 @@ def _generate_grouped_runtime_stats_bar_chart_pdf(
         ax.legend(loc='upper left')
 
         _tight_layout_with_auto_expand(fig)
-        fig.subplots_adjust(bottom=_pdf_bottom_margin_for_labels(differential_labels))
+        _expand_plot_width_to_page(
+            fig,
+            bottom_margin=_pdf_bottom_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved grouped runtime stats bar chart to %s", output_path)
