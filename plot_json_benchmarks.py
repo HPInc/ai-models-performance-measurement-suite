@@ -257,12 +257,17 @@ def _build_dataset_from_json(
     label = extract_label_from_json_data(data)
     metadata = extract_dataset_metadata(data)
     color = OVERLAY_COLORS[idx % len(OVERLAY_COLORS)]
+    llama_version = metadata['llama_version']
+    if not llama_version and isinstance(conv_metrics, dict):
+        llama_server_version = conv_metrics.get('llama_server_version', '')
+        if llama_server_version:
+            llama_version = str(llama_server_version)
 
     return DatasetInfo(
         label=label,
         stats=runtime_stats,
         color=color,
-        llama_version=metadata['llama_version'],
+        llama_version=llama_version,
         options=metadata['options'],
         server_options=metadata['server_options'],
         constant_server_options=metadata['constant_server_options'],
