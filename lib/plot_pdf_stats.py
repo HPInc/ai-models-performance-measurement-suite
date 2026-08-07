@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import logging
 import math
 import os
+import warnings
 from typing import Any, Dict, List, Optional
 
 # Import shared utilities from plot_common module.
@@ -126,6 +127,79 @@ def _calculate_tick_interval(duration_s: float) -> float:
     return interval
 
 
+def _tight_layout_with_auto_expand(
+    fig,
+    max_attempts: int = 4,
+    width_scale: float = 1.2,
+    height_scale: float = 1.15
+) -> None:
+    """Apply tight_layout and expand figure size automatically on layout warnings."""
+    for _ in range(max_attempts):
+        with warnings.catch_warnings(record=True) as captured_warnings:
+            warnings.simplefilter("always", UserWarning)
+            pyplot.tight_layout()
+
+        has_layout_warning = any(
+            "Tight layout not applied" in str(warning.message)
+            for warning in captured_warnings
+        )
+        if not has_layout_warning:
+            return
+
+        width_in, height_in = fig.get_size_inches()
+        fig.set_size_inches(width_in * width_scale, height_in * height_scale, forward=True)
+
+    logger.warning(
+        "Could not fully resolve tight_layout constraints after auto-expanding figure size."
+    )
+
+
+def _expand_horizontal_bar_plot_width(
+    fig,
+    left_margin: float,
+    right_margin: float = 0.99,
+    min_plot_fraction: float = 0.62
+) -> None:
+    """Expand figure width when needed so horizontal bar plot area fills the page."""
+    _expand_plot_width_to_page(
+        fig,
+        left_margin=left_margin,
+        right_margin=right_margin,
+        min_plot_fraction=min_plot_fraction,
+    )
+
+
+def _expand_plot_width_to_page(
+    fig,
+    left_margin: Optional[float] = None,
+    right_margin: float = 0.99,
+    bottom_margin: Optional[float] = None,
+    min_plot_fraction: float = 0.62,
+) -> None:
+    """Expand figure width as needed, then apply subplot margins."""
+    subplot_params = fig.subplotpars
+    resolved_left = subplot_params.left if left_margin is None else left_margin
+    resolved_bottom = subplot_params.bottom if bottom_margin is None else bottom_margin
+
+    plot_fraction = max(0.05, right_margin - resolved_left)
+    if plot_fraction < min_plot_fraction:
+        width_in, height_in = fig.get_size_inches()
+        width_scale = min_plot_fraction / plot_fraction
+        fig.set_size_inches(width_in * width_scale, height_in, forward=True)
+
+    fig.subplots_adjust(left=resolved_left, right=right_margin, bottom=resolved_bottom)
+
+
+def _place_legend_outside_right(ax: Any, fontsize: int = 9) -> None:
+    """Place a legend outside the plotting area on the right side."""
+    ax.legend(
+        loc='upper left',
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        fontsize=fontsize,
+    )
+
+
 def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
     """
     Generate a single metric plot and save it as a PDF.
@@ -196,10 +270,11 @@ def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
 
         # Grid and legend
         ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right')
+        _place_legend_outside_right(ax, fontsize=9)
 
         # Tight layout and save
-        pyplot.tight_layout()
+        _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(fig, right_margin=0.76)
         pyplot.savefig(config.output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -317,7 +392,7 @@ def _add_legend_to_first_subplot(ax: Any, benchmark_duration_s: float) -> None:
                label='Worker Start')
     ax.axvline(x=benchmark_duration_s, color='red', linestyle='--',
                linewidth=1.5, label='Worker End')
-    ax.legend(loc='upper right', fontsize=8)
+    _place_legend_outside_right(ax, fontsize=8)
 
 
 def _render_combined_subplots(
@@ -386,7 +461,8 @@ def generate_combined_pdf_plot(
 
         _render_combined_subplots(axes, stats, available_metrics, benchmark_duration_s, subtitle)
 
-        pyplot.tight_layout()
+        _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(fig, right_margin=0.76)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -541,7 +617,7 @@ def generate_overlay_combined_plot(          # pylint: disable=too-many-locals
             if idx == n_plots - 1:
                 _configure_bottom_axis(axes[idx], tick_interval)
 
-        axes[0].legend(loc='upper right', fontsize=8)
+        _place_legend_outside_right(axes[0], fontsize=8)
 
         if subtitle:
             axes[0].set_title(axes[0].get_title(), fontsize=11, fontweight='bold', pad=20)
@@ -549,7 +625,8 @@ def generate_overlay_combined_plot(          # pylint: disable=too-many-locals
                          transform=axes[0].transAxes, fontsize=9, style='italic',
                          ha='center', va='bottom')
 
-        pyplot.tight_layout()
+        _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(fig, right_margin=0.76)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -596,7 +673,7 @@ def _render_single_overlay_plot(
     title_pad = 20 if config.subtitle else 6
     ax.set_title(f'{config.metric_name} Over Time', fontsize=14, fontweight='bold', pad=title_pad)
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='upper right')
+    _place_legend_outside_right(ax, fontsize=9)
 
     if config.subtitle:
         ax.text(0.5, 1.0, config.subtitle,
@@ -659,7 +736,8 @@ def generate_overlay_pdf_plots(             # pylint: disable=too-many-locals
         try:
             fig, ax = pyplot.subplots(figsize=(12, 6))
             _render_single_overlay_plot(ax, datasets, config)
-            pyplot.tight_layout()
+            _tight_layout_with_auto_expand(fig)
+            _expand_plot_width_to_page(fig, right_margin=0.76)
             pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
             pyplot.close(fig)
             logger.info("Saved overlay plot to %s", output_path)
@@ -800,8 +878,11 @@ def generate_bar_chart(datasets: List[DatasetInfo], config: BarChartConfig) -> b
     try:
         fig, ax = pyplot.subplots(figsize=(10, max(4, len(valid_datasets) * 0.6)))
         _render_pdf_bar_chart(ax, valid_datasets, values, config, differential_labels, stddev_values)
-        pyplot.tight_layout()
-        fig.subplots_adjust(left=_pdf_left_margin_for_labels(differential_labels))
+        _tight_layout_with_auto_expand(fig)
+        _expand_horizontal_bar_plot_width(
+            fig,
+            left_margin=_pdf_left_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(config.output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved bar chart to %s", config.output_path)
@@ -898,8 +979,11 @@ def generate_memory_usage_bar_chart_pdf(
         ax.grid(True, axis='y', alpha=0.3)
         ax.legend(loc='upper left')
 
-        pyplot.tight_layout()
-        fig.subplots_adjust(bottom=_pdf_bottom_margin_for_labels(differential_labels))
+        _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(
+            fig,
+            bottom_margin=_pdf_bottom_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved memory usage bar chart to %s", output_path)
@@ -995,8 +1079,11 @@ def generate_gpu_memory_usage_bar_chart_pdf(
         ax.grid(True, axis='y', alpha=0.3)
         ax.legend(loc='upper left')
 
-        pyplot.tight_layout()
-        fig.subplots_adjust(bottom=_pdf_bottom_margin_for_labels(differential_labels))
+        _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(
+            fig,
+            bottom_margin=_pdf_bottom_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved GPU memory usage bar chart to %s", output_path)
@@ -1093,8 +1180,11 @@ def _generate_grouped_runtime_stats_bar_chart_pdf(
         ax.grid(True, axis='y', alpha=0.3)
         ax.legend(loc='upper left')
 
-        pyplot.tight_layout()
-        fig.subplots_adjust(bottom=_pdf_bottom_margin_for_labels(differential_labels))
+        _tight_layout_with_auto_expand(fig)
+        _expand_plot_width_to_page(
+            fig,
+            bottom_margin=_pdf_bottom_margin_for_labels(differential_labels)
+        )
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved grouped runtime stats bar chart to %s", output_path)
@@ -1348,8 +1438,8 @@ def generate_combined_performance_pdf(
             )
             _render_pdf_bar_chart(ax, valid_ds, values, config, differential_labels, stddev_values)
 
-        pyplot.tight_layout()
-        fig.subplots_adjust(left=left_margin)
+        _tight_layout_with_auto_expand(fig)
+        _expand_horizontal_bar_plot_width(fig, left_margin=left_margin)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved combined performance chart to %s", output_path)
@@ -1532,8 +1622,8 @@ def generate_embeddings_combined_performance_pdf(
             )
             _render_pdf_bar_chart(ax, valid_ds, values, config, differential_labels, stddev_values)
 
-        pyplot.tight_layout()
-        fig.subplots_adjust(left=left_margin)
+        _tight_layout_with_auto_expand(fig)
+        _expand_horizontal_bar_plot_width(fig, left_margin=left_margin)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
         logger.info("Saved embeddings combined performance chart to %s", output_path)

@@ -427,6 +427,19 @@ def _build_output_filename(
     return filename
 
 
+def _extract_llama_server_version_from_install_dir(install_dir: str) -> str:
+    """Extract a llama-server version identifier from the install directory name."""
+    install_name = os.path.basename(install_dir.rstrip(os.sep))
+    if not install_name:
+        return ''
+
+    build_match = re.search(r'b\d+', install_name)
+    if build_match:
+        return build_match.group(0)
+
+    return install_name
+
+
 # _extract_convenience_metrics is imported from mass_bench_common
 # (as extract_benchy_convenience_metrics) and aliased above.
 
@@ -635,6 +648,9 @@ def run_llama_benchy_with_monitoring(
             fixed_server_options=constant_server_options,
             fixed_benchy_options=fixed_benchy_options
         )
+        llama_server_version = _extract_llama_server_version_from_install_dir(install_dir)
+        if llama_server_version:
+            conv_metrics['llama_server_version'] = llama_server_version
         if total_runs > 1:
             conv_metrics['runs'] = f'Run #{run_number}'
         conv_metrics['variant'] = extract_variant_number_from_path(output_path)
