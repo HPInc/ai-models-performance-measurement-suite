@@ -190,6 +190,16 @@ def _expand_plot_width_to_page(
     fig.subplots_adjust(left=resolved_left, right=right_margin, bottom=resolved_bottom)
 
 
+def _place_legend_outside_right(ax: Any, fontsize: int = 9) -> None:
+    """Place a legend outside the plotting area on the right side."""
+    ax.legend(
+        loc='upper left',
+        bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+        fontsize=fontsize,
+    )
+
+
 def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
     """
     Generate a single metric plot and save it as a PDF.
@@ -260,11 +270,11 @@ def plot_pdf_metric(data: List[List[Any]], config: PlotConfig) -> bool:
 
         # Grid and legend
         ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right')
+        _place_legend_outside_right(ax, fontsize=9)
 
         # Tight layout and save
         _tight_layout_with_auto_expand(fig)
-        _expand_plot_width_to_page(fig)
+        _expand_plot_width_to_page(fig, right_margin=0.76)
         pyplot.savefig(config.output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -382,7 +392,7 @@ def _add_legend_to_first_subplot(ax: Any, benchmark_duration_s: float) -> None:
                label='Worker Start')
     ax.axvline(x=benchmark_duration_s, color='red', linestyle='--',
                linewidth=1.5, label='Worker End')
-    ax.legend(loc='upper right', fontsize=8)
+    _place_legend_outside_right(ax, fontsize=8)
 
 
 def _render_combined_subplots(
@@ -452,7 +462,7 @@ def generate_combined_pdf_plot(
         _render_combined_subplots(axes, stats, available_metrics, benchmark_duration_s, subtitle)
 
         _tight_layout_with_auto_expand(fig)
-        _expand_plot_width_to_page(fig)
+        _expand_plot_width_to_page(fig, right_margin=0.76)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -607,7 +617,7 @@ def generate_overlay_combined_plot(          # pylint: disable=too-many-locals
             if idx == n_plots - 1:
                 _configure_bottom_axis(axes[idx], tick_interval)
 
-        axes[0].legend(loc='upper right', fontsize=8)
+        _place_legend_outside_right(axes[0], fontsize=8)
 
         if subtitle:
             axes[0].set_title(axes[0].get_title(), fontsize=11, fontweight='bold', pad=20)
@@ -616,7 +626,7 @@ def generate_overlay_combined_plot(          # pylint: disable=too-many-locals
                          ha='center', va='bottom')
 
         _tight_layout_with_auto_expand(fig)
-        _expand_plot_width_to_page(fig)
+        _expand_plot_width_to_page(fig, right_margin=0.76)
         pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
         pyplot.close(fig)
 
@@ -663,7 +673,7 @@ def _render_single_overlay_plot(
     title_pad = 20 if config.subtitle else 6
     ax.set_title(f'{config.metric_name} Over Time', fontsize=14, fontweight='bold', pad=title_pad)
     ax.grid(True, alpha=0.3)
-    ax.legend(loc='upper right')
+    _place_legend_outside_right(ax, fontsize=9)
 
     if config.subtitle:
         ax.text(0.5, 1.0, config.subtitle,
@@ -727,7 +737,7 @@ def generate_overlay_pdf_plots(             # pylint: disable=too-many-locals
             fig, ax = pyplot.subplots(figsize=(12, 6))
             _render_single_overlay_plot(ax, datasets, config)
             _tight_layout_with_auto_expand(fig)
-            _expand_plot_width_to_page(fig)
+            _expand_plot_width_to_page(fig, right_margin=0.76)
             pyplot.savefig(output_path, format='pdf', dpi=150, bbox_inches='tight')
             pyplot.close(fig)
             logger.info("Saved overlay plot to %s", output_path)
