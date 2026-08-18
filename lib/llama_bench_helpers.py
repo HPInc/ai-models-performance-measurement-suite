@@ -24,6 +24,8 @@ import json
 import logging
 import multiprocessing
 import os
+import platform
+import shutil
 from typing import Any, Dict, List, Optional
 
 try:
@@ -46,6 +48,37 @@ from dashed_options import (
 from convenience_metrics import calculate_convenience_metrics
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_llama_bench_executable() -> str:
+    """
+    Resolve the llama-bench executable path in a cross-platform way.
+
+    Priority:
+    1) Executable in the current working directory (used when caller chdirs
+       into a llama.cpp install directory).
+    2) Executable discoverable via PATH.
+    3) Fallback to bare command name.
+    """
+    local_candidates = ["llama-bench"]
+    if platform.system() == "Windows":
+        local_candidates = ["llama-bench.exe", "llama-bench"]
+
+    for candidate in local_candidates:
+        local_path = os.path.join(os.getcwd(), candidate)
+        if os.path.isfile(local_path) and os.access(local_path, os.X_OK):
+            return local_path
+
+    path_candidate = shutil.which("llama-bench")
+    if path_candidate:
+        return path_candidate
+
+    if platform.system() == "Windows":
+        path_candidate = shutil.which("llama-bench.exe")
+        if path_candidate:
+            return path_candidate
+
+    return "llama-bench"
 
 
 def find_llama_bench_installs(llama_bench_dirs: List[str]) -> List[str]:
@@ -95,7 +128,8 @@ def benchmark_model(gguf_model_file: str, options: List[str], verbose: bool) -> 
         The `llama-bench` stdout as a string on success; otherwise, None.
     """
     # Construct the command to run llama-bench with JSON output.
-    cmd = ['llama-bench', '-m', gguf_model_file, '-o', 'json']
+    llama_bench_exe = _resolve_llama_bench_executable()
+    cmd = [llama_bench_exe, '-m', gguf_model_file, '-o', 'json']
 
     # Add options (if any)
     if options:
@@ -532,7 +566,8 @@ def run_warmup(model: str, bench_install: str) -> None:
     bench_install : str
         Path to the llama.cpp installation (for logging).
     """
-    cmd = ['llama-bench', '-m', model, '-r', '1', '--n_prompt', '1', '--n_gen', '0']
+    llama_bench_exe = _resolve_llama_bench_executable()
+    cmd = [llama_bench_exe, '-m', model, '-r', '1', '--n_prompt', '1', '--n_gen', '0']
     _, _, return_code = execute_command(cmd)
     if return_code != 0:
         logger.warning("Warm-up run failed for model %s in install %s.",

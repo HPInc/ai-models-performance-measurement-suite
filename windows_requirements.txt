@@ -3,3 +3,4 @@ pywin32>=311
 matplotlib>=3.10.8
 json-repair>=0.59.0
 plotly>=6.6.0
+llama-benchy>=0.3.8

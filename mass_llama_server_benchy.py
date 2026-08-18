@@ -32,7 +32,7 @@ Expected environment
 --------------------
 - Requires `psutil` for process management.
 - Requires library modules: platform_support, dashed_options, resource_monitor.
-- Designed exclusively for Windows 10/11 environments.
+- Supports Windows and Linux, with optional Windows-only power mode changes.
 
 Imports
 -------
@@ -54,6 +54,7 @@ import argparse
 import json
 import logging
 import os
+import platform
 import re
 import signal
 import socket
@@ -64,9 +65,13 @@ import time
 
 from typing import List, Optional
 
+IS_WINDOWS = platform.system() == 'Windows'
+IS_LINUX = platform.system() == 'Linux'
+
 # Configure a module-level logger. The main() routine will set the global
 # logging level and format via logging.basicConfig().
 logger = logging.getLogger(__name__)
+_LLAMA_SERVER_CANDIDATES = ('llama-server.exe', 'llama-server')
 
 # Pylint assumes that multiline comments should only be used for file
 # or function doc strings. I profoundly disagree.
@@ -115,11 +120,10 @@ except ImportError:
 
 # Import power configuration utilities for setting power mode.
 try:
-    from power_config import set_power_mode, get_power_mode
-except ImportError:
-    raise RuntimeError("Cannot find power_config module.") from None
+    from power_config import get_power_profile, get_power_mode, set_power_mode
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("Missing power_config.py library file.") from exc
 
-# Import power configuration utilities for setting power mode.
 try:
     from benchmark_environment import reset_benchmark_environment
 except ImportError:
@@ -130,24 +134,37 @@ try:
     from mass_bench_common import (
         DEFAULT_SAMPLE_INTERVAL,
         BenchmarkArgumentParser,
-        POWER_MODE_SHORT,
+        POWER_MODE_MAP,
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
         parse_model_spec,
         setup_logging,
         check_python_version,
-        check_windows_platform,
     )
 except ImportError:
     raise RuntimeError("Cannot find mass_bench_common module.") from None
+
+try:
+    from llama_server_process import LlamaServerProcess
+except ImportError:
+    raise RuntimeError("Cannot find llama_server_process module.") from None
 
 # Lazy import ResourceMonitor to avoid circular dependency.
 # Import happens inside functions that need it.
 
 # Constants
-DEFAULT_SERVER_STARTUP_TIMEOUT = 60  # seconds
+DEFAULT_SERVER_STARTUP_TIMEOUT = 300  # seconds
 SERVER_URL_PATTERN = re.compile(r'http://[^\s]+:\d+')
+
+
+def _find_llama_server_binary(install_dir: str) -> Optional[str]:
+    """Return the first llama-server binary found in an install directory."""
+    for candidate in _LLAMA_SERVER_CANDIDATES:
+        server_path = os.path.join(install_dir, candidate)
+        if os.path.isfile(server_path):
+            return server_path
+    return None
 
 
 def find_llama_server_installs(llama_dirs: Optional[List[str]]) -> List[str]:
@@ -168,185 +185,58 @@ def find_llama_server_installs(llama_dirs: Optional[List[str]]) -> List[str]:
     if llama_dirs:
         for install_dir in llama_dirs:
             if os.path.isdir(install_dir):
-                # Check for llama-server executable
-                server_path = os.path.join(install_dir, 'llama-server.exe')
-                if os.path.isfile(server_path):
+                server_path = _find_llama_server_binary(install_dir)
+                if server_path:
                     server_installs.append(install_dir)
                 else:
-                    logger.warning('llama-server.exe not found in %s', install_dir)
+                    logger.warning('llama-server not found in %s', install_dir)
             else:
                 logger.warning('Directory %s not found.', install_dir)
 
     if not server_installs:
         # Pick the current working directory as the default.
         cwd = os.getcwd()
-        if os.path.isfile(os.path.join(cwd, 'llama-server.exe')):
+        if _find_llama_server_binary(cwd):
             server_installs.append(cwd)
         else:
-            logger.warning('llama-server.exe not found in current directory.')
+            logger.warning('llama-server not found in current directory.')
 
     return server_installs
 
 
 def check_existing_llama_server_running() -> bool:
-    """Detect an existing llama-server.exe process and abort before launching a new one."""
+    """Detect an existing llama-server process and abort before launching a new one."""
     try:
+        if IS_WINDOWS:
+            for binary_name in _LLAMA_SERVER_CANDIDATES:
+                result = subprocess.run(
+                    ['tasklist', '/FI', f'IMAGENAME eq {binary_name}'],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if binary_name in result.stdout:
+                    logger.warning('%s is already running. Terminating benchmark launch.',
+                                   binary_name)
+                    return True
+            return False
+
         result = subprocess.run(
-            ['tasklist', '/FI', 'IMAGENAME eq llama-server.exe'],
+            ['pgrep', '-f', '(^|/)llama-server($| )'],
             capture_output=True,
             text=True,
             check=False
         )
-        if 'llama-server.exe' not in result.stdout:
-            return False
-
-        logger.warning('llama-server.exe is already running. Terminating benchmark launch.')
-        return True
+        if result.returncode == 0 and result.stdout.strip():
+            logger.warning('llama-server is already running. Terminating benchmark launch.')
+            return True
+        return False
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning('Failed to check existing llama-server.exe: %s', exc)
+        logger.warning('Failed to check existing llama-server process: %s', exc)
         return False
 
 
 # parse_model_spec is imported from mass_bench_common.
-
-
-class LlamaServerProcess:
-    """
-    Manages the lifecycle of a llama-server process.
-
-    This class handles starting llama-server, capturing its URL from output,
-    and cleanly shutting it down.
-    """
-
-    def __init__(
-        self,
-        install_dir: str,
-        model_path: Optional[str],
-        server_options: List[str],
-        verbose: bool = False,
-        startup_timeout: int = DEFAULT_SERVER_STARTUP_TIMEOUT
-    ):
-        """
-        Initialize the server process manager.
-
-        Args:
-            install_dir: Directory containing llama-server executable.
-            model_path: Path to the GGUF model file, or None if the model
-                is specified via server_options.
-            server_options: Additional command-line options for the server.
-            verbose: If True, append -v to llama-server command.
-            startup_timeout: Seconds to wait for server to start.
-        """
-        self.install_dir = install_dir
-        self.model_path = model_path
-        self.server_options = server_options
-        self.verbose = verbose
-        self.startup_timeout = startup_timeout
-        self.process: Optional[subprocess.Popen] = None
-        self.url: Optional[str] = None
-
-    def start(self) -> Optional[str]:
-        """
-        Start the llama-server process and wait for it to be ready.
-
-        Returns:
-            The server URL if successful, None otherwise.
-        """
-        server_exe = os.path.join(self.install_dir, 'llama-server.exe')
-        if self.model_path:
-            cmd = [server_exe, '-m', self.model_path] + self.server_options
-        else:
-            cmd = [server_exe] + self.server_options
-
-        if self.verbose:
-            cmd.append('-v')
-
-        logger.info("Changed directory to %s", self.install_dir)
-        logger.info("Starting llama-server: %s", ' '.join(cmd))
-
-        try:
-            # Start the server process with combined stdout/stderr
-            # Use CREATE_NEW_PROCESS_GROUP on Windows for proper signal handling
-            # pylint: disable=subprocess-popen-preexec-fn
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=self.install_dir,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-
-            # Wait for the server to output its URL
-            start_time = time.time()
-            while time.time() - start_time < self.startup_timeout:
-                if self.process.poll() is not None:
-                    # Process has exited
-                    remaining_output = self.process.stdout.read()
-                    logger.error("llama-server exited unexpectedly. Output: %s",
-                                 remaining_output)
-                    return None
-
-                # Read available output
-                line = self.process.stdout.readline()
-                if line:
-                    logger.debug("llama-server: %s", line.strip())
-                    # Look for URL pattern in output
-                    match = SERVER_URL_PATTERN.search(line)
-                    if match:
-                        self.url = match.group(0)
-                        logger.info("llama-server started at: %s", self.url)
-                        return self.url
-
-                time.sleep(0.1)
-
-            logger.error("Timeout waiting for llama-server to start.")
-            self.stop()
-            return None
-
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.error("Failed to start llama-server: %s", exc)
-            self.stop()
-            return None
-
-    def stop(self) -> None:
-        """Stop the llama-server process gracefully."""
-        if self.process is None:
-            return
-
-        logger.info("Stopping llama-server...")
-
-        try:
-            # Send CTRL_BREAK_EVENT for graceful shutdown (Windows)
-            self.process.send_signal(signal.CTRL_BREAK_EVENT)
-
-            # Wait for graceful shutdown
-            try:
-                self.process.wait(timeout=10)
-                logger.debug("llama-server stopped gracefully.")
-            except subprocess.TimeoutExpired:
-                logger.warning("llama-server did not stop gracefully, killing...")
-                self.process.kill()
-                self.process.wait()
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.error("Error stopping llama-server: %s", exc)
-            try:
-                self.process.kill()
-            except Exception:  # pylint: disable=broad-except
-                pass
-
-        self.process = None
-        self.url = None
-
-    def __enter__(self):
-        """Context manager entry."""
-        self.start()
-        return self
-
-    def __exit__(self, _, __, ___):
-        """Context manager exit."""
-        self.stop()
-        return False
 
 
 def _build_output_filename(
@@ -476,21 +366,26 @@ def _worker_server_and_llama_benchy(
         install_dir,
         server_model,
         all_server_options,
+        find_server_binary_fn=_find_llama_server_binary,
+        server_url_pattern=SERVER_URL_PATTERN,
+        is_windows=IS_WINDOWS,
         verbose=verbose
     )
 
     try:
         server_url = server.start()
         if not server_url:
-            _logging.getLogger(__name__).error("Failed to start llama-server.")
+            logger.error("Failed to start llama-server.")
             result_queue.put(result)
             return
+
+        logger.debug("Worker received llama-server URL: %s", server_url)
 
         reported_model = _query_server_model(server_url)
         result['reported_model'] = reported_model
 
         if not server_model and not reported_model:
-            _logging.getLogger(__name__).error(
+            logger.error(
                 "No model loaded on llama-server. When -m is omitted, "
                 "the model must be specified via -c, -s, or -j options."
             )
@@ -503,7 +398,7 @@ def _worker_server_and_llama_benchy(
             cmd.extend(['--model', benchy_model])
         cmd.extend(benchy_options)
 
-        _logging.getLogger(__name__).info("Running llama-benchy command: %s", ' '.join(cmd))
+        logger.info("Running llama-benchy command: %s", ' '.join(cmd))
 
         proc_result = subprocess.run(
             cmd,
@@ -519,17 +414,17 @@ def _worker_server_and_llama_benchy(
         if proc_result.returncode == 0:
             result['success'] = True
             if verbose:
-                _logging.getLogger(__name__).debug("llama-benchy stdout: %s", proc_result.stdout)
+                logger.debug("llama-benchy stdout: %s", proc_result.stdout)
         else:
-            _logging.getLogger(__name__).error(
+            logger.error(
                 "llama-benchy failed with return code %d", proc_result.returncode)
-            _logging.getLogger(__name__).error("stdout: %s", proc_result.stdout)
-            _logging.getLogger(__name__).error("stderr: %s", proc_result.stderr)
+            logger.error("stdout: %s", proc_result.stdout)
+            logger.error("stderr: %s", proc_result.stderr)
 
     except FileNotFoundError:
-        _logging.getLogger(__name__).error("llama-benchy not found. Ensure it is installed and in PATH.")
+        logger.error("llama-benchy not found. Ensure it is installed and in PATH.")
     except Exception as exc:  # pylint: disable=broad-except
-        _logging.getLogger(__name__).error("Failed to run llama-server + llama-benchy worker: %s", exc)
+        logger.error("Failed to run llama-server + llama-benchy worker: %s", exc)
     finally:
         server.stop()
 
@@ -732,19 +627,9 @@ def _run_benchmarks_for_server_config(
     """
     written_json_files: List[str] = []
 
-    # Ensure llama-server cache RAM behavior defaults to disabled unless explicitly set.
-    effective_constant_server_options = list(constant_server_options) if constant_server_options else []
-    all_input_server_options = effective_constant_server_options + (variable_server_options or [])
-    has_cache_ram = any(
-        opt in ('-cram', '--cache-ram')
-        for opt in all_input_server_options
-    )
-    if not has_cache_ram:
-        effective_constant_server_options.extend(['-cram', '0'])
-
     # Combine constant and variable server options
     all_server_options = combine_options(
-        effective_constant_server_options,
+        constant_server_options,
         variable_server_options
     ) or []
 
@@ -775,7 +660,7 @@ def _run_benchmarks_for_server_config(
                 extra_benchy_options=extra_options,
                 verbose=verbose,
                 power_mode_label=power_mode_label,
-                constant_server_options=effective_constant_server_options,
+                constant_server_options=constant_server_options,
                 fixed_benchy_options=fixed_benchy_options,
                 description=description,
                 run_number=run_number,
@@ -862,7 +747,7 @@ def benchmark_models(parser_args) -> bool:
                 logger.debug("Current power mode: %s", current_mode)
 
         # Build power mode label for filenames
-        power_mode_label = POWER_MODE_SHORT.get(power_cli, power_cli) if power_cli else None
+        power_mode_label = POWER_MODE_MAP.get(power_cli, power_cli) if power_cli else None
 
         for install_dir in server_installs:
             logger.info("Using llama-server installation: %s", install_dir)
@@ -1120,12 +1005,12 @@ def _create_argument_parser() -> _BenchmarkArgumentParser:
 
     # Set Windows power mode before running benchmarks.
     optional.add_argument('-p', '--power-mode', type=str, action='append', required=False,
-        choices=['best-performance', 'balanced', 'best-power-efficiency'],
+        choices=['performance', 'balanced', 'power-saver'],
         help=textwrap.dedent('''\
-        Set Windows power mode before running benchmarks.
+        Set Windows power mode before running benchmarks (Windows only).
         Multiple -p parameters are allowed, which accumulate,
         and will create separate benchmark runs for each power mode.
-        Choices: best-performance, balanced, best-power-efficiency.
+        Choices: performance, balanced, power-saver.
         '''))
 
     # Control whether benchmark environment reset is performed before each server launch.
@@ -1141,7 +1026,6 @@ def main():
     Parse arguments, set up logging, and run benchmarks.
     """
     check_python_version()
-    check_windows_platform()
 
     # Preprocess arguments to handle values starting with dashes
     preprocessed_args = preprocess_dash_value_args(

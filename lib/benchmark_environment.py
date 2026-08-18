@@ -1,11 +1,13 @@
+import gc
 import os
 import time
 import ctypes
 import logging
-from typing import Optional
+import platform
 
 logger = logging.getLogger(__name__)
-
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
 
 def reset_benchmark_environment(
     memory_pressure_gb: float = 8.0,
@@ -14,14 +16,14 @@ def reset_benchmark_environment(
     """
     Reset the local system state to approximate a cold-start environment for benchmarking.
 
-    This function is designed for Windows and attempts to reduce the effects of:
+    This function attempts to reduce the effects of:
         - OS file/page cache (via memory pressure)
         - CPU cache and branch predictor warm-up
         - allocator and working set reuse
 
     NOTE:
-        Windows does not provide a direct API to drop file system cache like Linux.
-        This function uses indirect methods and provides best-effort behavior.
+        This function uses best-effort methods only. Some operations are platform-
+        specific and may require elevated privileges to have full effect.
 
     Args:
         memory_pressure_gb:
@@ -38,8 +40,6 @@ def reset_benchmark_environment(
     def _apply_memory_pressure(gb: float) -> None:
         """
         Allocate and release memory to evict OS file cache.
-
-        This is the primary mechanism for approximating cache clearing on Windows.
         """
         try:
             size = int(gb * (1024 ** 3))
@@ -76,9 +76,10 @@ def reset_benchmark_environment(
     def _trim_working_set() -> None:
         """
         Ask Windows to trim the working set of the current process.
-
-        This can indirectly encourage system-wide memory reclamation.
         """
+        if not IS_WINDOWS:
+            return
+
         try:
             kernel32 = ctypes.windll.kernel32
             h_process = kernel32.GetCurrentProcess()
@@ -87,14 +88,62 @@ def reset_benchmark_environment(
             # Non-critical; ignore failures
             pass
 
+    def _trim_linux_allocator() -> None:
+        """
+        Ask glibc to release free heap pages back to the OS when available.
+        """
+        if not IS_LINUX:
+            return
+
+        try:
+            libc = ctypes.CDLL(None)
+            malloc_trim = getattr(libc, "malloc_trim", None)
+            if malloc_trim is not None:
+                malloc_trim.argtypes = [ctypes.c_size_t]
+                malloc_trim.restype = ctypes.c_int
+                malloc_trim(0)
+        except Exception:
+            pass
+
+    def _drop_linux_caches() -> None:
+        """
+        Request Linux page-cache reclamation when the kernel interface is writable.
+        """
+        if not IS_LINUX:
+            return
+
+        try:
+            if hasattr(os, "sync"):
+                os.sync()
+        except Exception:
+            pass
+
+        drop_caches_path = "/proc/sys/vm/drop_caches"
+        try:
+            if os.path.exists(drop_caches_path) and os.access(drop_caches_path, os.W_OK):
+                with open(drop_caches_path, "w", encoding="utf-8") as handle:
+                    handle.write("3\n")
+            else:
+                logger.info("Linux cache drop requires write access to %s", drop_caches_path)
+        except Exception as exc:
+            logger.info("Linux cache drop not available: %s", exc)
+
     # ---- Execution sequence ----
 
-    logger.info("Resetting benchmark environment (Windows best-effort)...")
+    logger.info("Resetting benchmark environment (%s best-effort)...", platform.system())
     logger.info("Applying memory pressure...")
     _apply_memory_pressure(memory_pressure_gb)
 
-    logger.info("Trimming working set...")
-    _trim_working_set()
+    gc.collect()
+
+    if IS_WINDOWS:
+        logger.info("Trimming working set...")
+        _trim_working_set()
+    elif IS_LINUX:
+        logger.info("Trimming allocator state...")
+        _trim_linux_allocator()
+        logger.info("Requesting Linux cache drop...")
+        _drop_linux_caches()
 
     logger.info("Polluting CPU cache...")
     _pollute_cpu_cache(cpu_stress_seconds)

@@ -32,7 +32,7 @@ Expected environment
 - Requires `pywin32` for Windows GPU monitoring via PDH.
 - Requires library modules: resource_monitor, platform_support,
   dashed_options, convenience_metrics, json_utils.
-- Designed exclusively for Windows 10/11 environments.
+- Supports Windows and Linux, with optional Windows-only power mode changes.
 
 Imports
 -------
@@ -49,11 +49,15 @@ Imports
 """
 import argparse
 import os
+import platform
 import socket
 import sys
 import textwrap
 
 from typing import List
+
+IS_WINDOWS = platform.system() == 'Windows'
+IS_LINUX = platform.system() == 'Linux'
 
 # Configure a module-level logger. The main() routine will set the global
 # logging level and format via logging.basicConfig().
@@ -122,21 +126,19 @@ try:
 except ImportError:
     raise RuntimeError("Cannot find resource_monitor_helpers module.") from None
 
-# Import power configuration utilities for setting power mode.
 try:
-    from power_config import set_power_mode, get_power_mode
-except ImportError:
-    raise RuntimeError("Cannot find power_config module.") from None
+    from power_config import get_power_profile, get_power_mode, set_power_mode
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("Missing power_config.py library file.") from exc
 
 # Import shared benchmark utilities to avoid code duplication across mass_* scripts.
 try:
     from mass_bench_common import (
         BenchmarkArgumentParser,
-        POWER_MODE_SHORT,
+        POWER_MODE_MAP,
         iter_power_modes as _iter_power_modes,
         setup_logging,
         check_python_version,
-        check_windows_platform,
     )
 except ImportError:
     raise RuntimeError("Cannot find mass_bench_common module.") from None
@@ -184,7 +186,7 @@ def _run_benchmarks_for_install(
                         display_opts = list(extra_options) if extra_options else None
 
                         # Power mode label is kept separate for filename generation
-                        power_mode_label = POWER_MODE_SHORT.get(
+                        power_mode_label = POWER_MODE_MAP.get(
                             power_cli, power_cli) if power_cli else None
 
                         config = BenchmarkRunConfig(
@@ -391,12 +393,12 @@ def _create_argument_parser() -> _BenchmarkArgumentParser:
 
     # Set Windows power mode before running benchmarks.
     optional.add_argument('-p', '--power-mode', type=str, action='append', required=False,
-        choices=['best-performance', 'balanced', 'best-power-efficiency'],
+        choices=['performance', 'balanced', 'power-saver'],
         help=textwrap.dedent('''\
-        Set Windows power mode before running benchmarks.
+        Set Windows power mode before running benchmarks (Windows only).
         Multiple -p parameters are allowed, which accumulate,
         and will create separate benchmark runs for each power mode.
-        Choices: best-performance, balanced, best-power-efficiency.
+        Choices: performance, balanced, power-saver.
         '''))
 
     # Control whether benchmark environment reset is performed before each server launch.
@@ -412,7 +414,6 @@ def main():
     Parse arguments, set up logging, and benchmark models.
     """
     check_python_version()
-    check_windows_platform()
 
     # Grab the arguments and stash them away.
     # Preprocess arguments to handle values starting with dashes (e.g., -e "-fa 1")

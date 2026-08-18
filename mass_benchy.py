@@ -26,7 +26,7 @@ Expected environment
 --------------------
 - Requires ``psutil`` for process management.
 - Requires library modules: platform_support, dashed_options, resource_monitor.
-- Designed exclusively for Windows 10/11 environments.
+- Supports Windows and Linux, with optional Windows-only power mode changes.
 
 Imports
 -------
@@ -47,6 +47,7 @@ import argparse
 import json
 import logging
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -54,6 +55,9 @@ import textwrap
 
 from typing import List, Optional
 from urllib.parse import urlparse
+
+IS_WINDOWS = platform.system() == 'Windows'
+IS_LINUX = platform.system() == 'Linux'
 
 # Configure a module-level logger. The main() routine will set the global
 # logging level and format via logging.basicConfig().
@@ -103,24 +107,22 @@ try:
 except ImportError:
     raise RuntimeError("Cannot find dashed_options module.") from None
 
-# Import power configuration utilities for setting power mode.
 try:
-    from power_config import set_power_mode, get_power_mode
-except ImportError:
-    raise RuntimeError("Cannot find power_config module.") from None
-
+    from power_config import get_power_profile, get_power_mode, set_power_mode
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("Missing power_config.py library file.") from exc
+        
 # Import shared benchmark utilities to avoid code duplication across mass_* scripts.
 try:
     from mass_bench_common import (
         DEFAULT_SAMPLE_INTERVAL,
         BenchmarkArgumentParser,
-        POWER_MODE_SHORT,
+        POWER_MODE_MAP,
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
         setup_logging,
         check_python_version,
-        check_windows_platform,
     )
 except ImportError:
     raise RuntimeError("Cannot find mass_bench_common module.") from None
@@ -227,7 +229,7 @@ def _worker_llama_benchy(
     }
 
     try:
-        _logging.getLogger(__name__).info("Running llama-benchy command: %s", ' '.join(cmd))
+        logger.info("Running llama-benchy command: %s", ' '.join(cmd))
 
         proc_result = subprocess.run(
             cmd,
@@ -313,6 +315,8 @@ def run_llama_benchy_with_monitoring(
     os.close(temp_fd)  # Close the file descriptor; llama-benchy will write to it
 
     try:
+        logger.debug("Using endpoint URL: %s", endpoint_url)
+
         # Construct the llama-benchy command with --save-result to temp file
         cmd = ['llama-benchy', '--base-url', endpoint_url, '--format', 'json',
                '--save-result', temp_output_path]
@@ -506,10 +510,11 @@ def benchmark_endpoints(parser_args) -> bool:
                 logger.debug("Current power mode: %s", current_mode)
 
         # Build power mode label for filenames
-        power_mode_label = POWER_MODE_SHORT.get(power_cli, power_cli) if power_cli else None
+        power_mode_label = POWER_MODE_MAP.get(power_cli, power_cli) if power_cli else None
 
         for endpoint_url in parser_args.url:
             logger.info("Benchmarking endpoint: %s", endpoint_url)
+            logger.debug("Resolved endpoint URL: %s", endpoint_url)
 
             for model in models:
                 if model:
@@ -663,12 +668,12 @@ def _create_argument_parser() -> _BenchmarkArgumentParser:
 
     # Set Windows power mode before running benchmarks.
     optional.add_argument('-p', '--power-mode', type=str, action='append', required=False,
-        choices=['best-performance', 'balanced', 'best-power-efficiency'],
+        choices=['performance', 'balanced', 'power-saver'],
         help=textwrap.dedent('''\
-        Set Windows power mode before running benchmarks.
+        Set Windows power mode before running benchmarks (Windows only).
         Multiple -p parameters are allowed, which accumulate,
         and will create separate benchmark runs for each power mode.
-        Choices: best-performance, balanced, best-power-efficiency.
+        Choices: performance, balanced, power-saver.
         '''))
 
     return parser
@@ -679,7 +684,6 @@ def main():
     Parse arguments, set up logging, and run benchmarks.
     """
     check_python_version()
-    check_windows_platform()
 
     # Preprocess arguments to handle values starting with dashes
     preprocessed_args = preprocess_dash_value_args(
