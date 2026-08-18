@@ -17,7 +17,6 @@ Contents
   into (server_model, benchy_model).
 - setup_logging(): Configure logging level and format.
 - check_python_version(): Exit early if Python version is too old.
-- check_windows_platform(): Exit early on non-Windows platforms.
 """
 from __future__ import annotations
 
@@ -63,8 +62,8 @@ def extract_benchy_convenience_metrics(
     Extract convenience metrics from llama-benchy JSON output.
 
     Maps llama-benchy fields to the standard convenience_metrics format:
-    - benchmarks[0]:ttfr:mean => ttft_ms
-    - benchmarks[0]:ttfr:std => ttft_stddev_ms
+    - benchmarks[0]:e2e_ttft:mean => ttft_ms
+    - benchmarks[0]:e2e_ttft:std => ttft_stddev_ms
     - benchmarks[0]:tg_throughput:mean => avg_ts
     - benchmarks[0]:tg_throughput:std => avg_ts_stddev
     - model => model name used for the benchmark
@@ -99,13 +98,13 @@ def extract_benchy_convenience_metrics(
         logger.warning("First benchmark entry is not a dictionary")
         return conv_metrics
 
-    # Extract TTFT from benchmarks[0]:ttfr:mean (time to first response)
-    if 'ttfr' in benchmark and isinstance(benchmark['ttfr'], dict):
-        ttfr = benchmark['ttfr']
-        if 'mean' in ttfr and ttfr['mean'] is not None:
-            conv_metrics['ttft_ms'] = round(float(ttfr['mean']), 3)
-        if 'std' in ttfr and ttfr['std'] is not None:
-            conv_metrics['ttft_stddev_ms'] = round(float(ttfr['std']), 3)
+    # Extract TTFT from benchmarks[0]:e2e_ttft:mean (end-to-end time to first token)
+    if 'e2e_ttft' in benchmark and isinstance(benchmark['e2e_ttft'], dict):
+        e2e_ttft = benchmark['e2e_ttft']
+        if 'mean' in e2e_ttft and e2e_ttft['mean'] is not None:
+            conv_metrics['ttft_ms'] = round(float(e2e_ttft['mean']), 3)
+        if 'std' in e2e_ttft and e2e_ttft['std'] is not None:
+            conv_metrics['ttft_stddev_ms'] = round(float(e2e_ttft['std']), 3)
 
     # Extract avg_ts from benchmarks[0]:tg_throughput:mean (token generation throughput)
     if 'tg_throughput' in benchmark and isinstance(benchmark['tg_throughput'], dict):
@@ -158,14 +157,21 @@ def query_server_model(base_url: str, timeout: float = 5.0) -> Optional[str]:
     Returns:
         The model id string reported by the server, or None on failure.
     """
-    url = base_url.rstrip('/') + '/v1/models'
+    url = base_url.rstrip('/')
+    if not url.endswith('/v1'):
+        url += '/v1'
+    url += '/models'
     try:
         req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = _json.loads(resp.read().decode('utf-8'))
             models = data.get('data', [])
             if models and isinstance(models, list) and 'id' in models[0]:
-                return models[0]['id']
+                found_model = models[0]['id']
+                logger.info("Model ID found from first element of v1/models endpoint = %s", found_model)
+                if len(models) > 1:
+                    logger.info("Number of models in v1/models list = %d", len(models))
+                return found_model
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("Failed to query server model at %s: %s", url, exc)
     return None
@@ -223,25 +229,11 @@ def check_python_version() -> None:
         sys.exit(1)
 
 
-def check_windows_platform() -> None:
-    """Exit with a message if not running on Windows."""
-    if platform.system() != 'Windows':
-        print('Sorry, but this script only runs on Windows.')
-        sys.exit(1)
-
-
-# Power mode CLI format -> Windows API format
+# Power mode CLI format -> Description
 POWER_MODE_MAP = {
-    "best-performance": "Best Performance",
+    "performance": "Performance",
     "balanced": "Balanced",
-    "best-power-efficiency": "Best Power Efficiency",
-}
-
-# Shortened names for display in filenames and chart labels
-POWER_MODE_SHORT = {
-    "best-performance": "Performance",
-    "balanced": "Balanced",
-    "best-power-efficiency": "Efficiency",
+    "power-saver": "Power Saver",
 }
 
 
@@ -255,7 +247,7 @@ def iter_power_modes(power_modes: Optional[List[str]]):
     Parameters
     ----------
     power_modes : Optional[List[str]]
-        List of power mode CLI names (e.g., ['best-performance', 'balanced']),
+        List of power mode CLI names (e.g., ['performance', 'balanced']),
         or None to use the current power mode.
 
     Yields

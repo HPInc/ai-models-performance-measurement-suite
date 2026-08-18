@@ -19,17 +19,19 @@ import glob
 import json
 import logging
 import os
+import platform
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Mapping from full Windows power mode name to short display name
-_POWER_MODE_SHORT_NAMES = {
-    "Best Performance": "Performance",
-    "Balanced": "Balanced",
-    "Best Power Efficiency": "Efficiency",
-}
+IS_WINDOWS = platform.system() == 'Windows'
+IS_LINUX = platform.system() == 'Linux'
 
+# Import power configuration utilities for setting power mode.
+try:
+    from power_config import get_power_mode
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("Missing power_config.py library file.") from exc
 
 def read_json_files_from_directory(directory: str) -> List[Dict[str, Any]]:
     """
@@ -174,13 +176,12 @@ def extract_label_from_json_data(data: Dict[str, Any]) -> str:
         if isinstance(variant, int) and variant > 0:
             label_parts.append(f'Variant {variant}')
 
-    # Append short power mode name from system_info if available
+    # Append power mode name from system_info if available
     system_info = data.get('system_info', {})
     if isinstance(system_info, dict):
         power_mode = system_info.get('Power Mode', '')
-        short_name = _POWER_MODE_SHORT_NAMES.get(power_mode, '')
-        if short_name:
-            label_parts.append(short_name)
+        if power_mode:
+            label_parts.append(power_mode)
 
     if label_parts:
         return ' '.join(label_parts)
@@ -298,13 +299,12 @@ def extract_dataset_metadata(data: Dict[str, Any]) -> Dict[str, str]:
         if isinstance(variant, int) and variant > 0:
             metadata['variant'] = f'Variant {variant}'
 
-    # Extract power mode short name from system_info for label differentiation
+    # Extract power mode name from system_info for label differentiation
     system_info = data.get('system_info', {})
     if isinstance(system_info, dict):
         power_mode = system_info.get('Power Mode', '')
-        short_name = _POWER_MODE_SHORT_NAMES.get(power_mode, '')
-        if short_name:
-            metadata['power_mode'] = short_name
+        if power_mode:
+            metadata['power_mode'] = power_mode
 
     return metadata
 

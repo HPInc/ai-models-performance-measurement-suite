@@ -58,11 +58,15 @@ import logging
 import multiprocessing
 import os
 import platform
+import shlex
 import sys
 import time
 from typing import Any, Callable, Dict, Tuple, List
 
 logger = logging.getLogger(__name__)
+
+IS_WINDOWS = platform.system() == 'Windows'
+IS_LINUX = platform.system() == 'Linux'
 
 # Pylint assumes that multiline comments should only be used for file
 # or function doc strings. I profoundly disagree.
@@ -108,7 +112,7 @@ try:
     from npu_sampler import NPUSampler
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Missing npu_sampler.py library file.") from exc
-
+    
 try:
     from platform_support import create_output_directory_tree, execute_command
 except ImportError as exc:  # pragma: no cover
@@ -140,7 +144,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     @staticmethod
     def _get_cpu_info() -> str:
         """
-        Get the CPU name using PowerShell Get-CimInstance.
+        Get the CPU name for the current platform.
 
         Returns
         -------
@@ -148,7 +152,22 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             The CPU name (e.g., "AMD Ryzen AI 7 PRO 350 w/ Radeon 860M"),
             or an empty string if detection fails.
         """
-        # Use PowerShell to query WMI - works on Windows 10/11
+        if IS_LINUX:
+            try:
+                with open('/proc/cpuinfo', 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.lower().startswith('model name') and ':' in line:
+                            return line.split(':', 1)[1].strip()
+            except OSError:
+                pass
+
+            stdout, _, returncode = execute_command(['lscpu'])
+            if returncode == 0 and stdout:
+                for line in stdout.splitlines():
+                    if line.startswith('Model name:'):
+                        return line.split(':', 1)[1].strip()
+            return platform.processor()
+
         cmd = [
             'powershell', '-NoProfile', '-Command',
             '(Get-CimInstance -ClassName Win32_Processor).Name'
@@ -161,7 +180,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     @staticmethod
     def _get_gpu_info() -> str:
         """
-        Get the GPU name(s) using PowerShell Get-CimInstance.
+        Get the GPU name(s) for the current platform.
 
         Returns
         -------
@@ -170,7 +189,37 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             or an empty string if detection fails. Multiple GPUs are
             separated by " | ".
         """
-        # Use PowerShell to query WMI - works on Windows 10/11
+        if IS_LINUX:
+            stdout, _, returncode = execute_command(['lspci'])
+            if returncode == 0 and stdout:
+                gpu_names = []
+                for line in stdout.splitlines():
+                    lowered = line.lower()
+                    if any(token in lowered for token in ('vga compatible controller',
+                                                          '3d controller',
+                                                          'display controller')):
+                        gpu_names.append(line.split(': ', 1)[1].strip()
+                                         if ': ' in line else line.strip())
+                if gpu_names:
+                    return ' | '.join(gpu_names)
+
+            drm_root = '/sys/class/drm'
+            gpu_names = []
+            if os.path.isdir(drm_root):
+                for entry in sorted(os.listdir(drm_root)):
+                    if not entry.startswith('card') or not entry[4:].isdigit():
+                        continue
+                    device_dir = os.path.join(drm_root, entry, 'device')
+                    driver_link = os.path.join(device_dir, 'driver')
+                    try:
+                        if os.path.islink(driver_link):
+                            gpu_names.append(os.path.basename(os.path.realpath(driver_link)))
+                    except OSError:
+                        continue
+            if gpu_names:
+                return ' | '.join(dict.fromkeys(gpu_names))
+            return ''
+
         cmd = [
             'powershell', '-NoProfile', '-Command',
             '(Get-CimInstance -ClassName Win32_VideoController).Name'
@@ -190,7 +239,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     @staticmethod
     def _get_gpu_driver_version() -> str:
         """
-        Get the GPU driver version(s) using PowerShell Get-CimInstance.
+        Get the GPU driver version(s) for the current platform.
 
         Returns
         -------
@@ -199,7 +248,9 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             or an empty string if detection fails. Multiple driver versions
             are separated by " | ".
         """
-        # Use PowerShell to query WMI - works on Windows 10/11
+        if IS_LINUX:
+            return ''
+
         cmd = [
             'powershell', '-NoProfile', '-Command',
             '(Get-CimInstance -ClassName Win32_VideoController).DriverVersion'
@@ -219,7 +270,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     @staticmethod
     def _get_gpu_driver_date() -> str:
         """
-        Get the GPU driver date(s) using PowerShell Get-CimInstance.
+        Get the GPU driver date(s) for the current platform.
 
         Returns
         -------
@@ -228,8 +279,9 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             or an empty string if detection fails. Multiple driver dates
             are separated by " | ".
         """
-        # Use PowerShell to query WMI and format the date - works on Windows 10/11
-        # DriverDate is a CIM datetime; we format it as YYYY-MM-DD for readability
+        if IS_LINUX:
+            return ''
+
         cmd = [
             'powershell', '-NoProfile', '-Command',
             '(Get-CimInstance -ClassName Win32_VideoController).DriverDate | '
@@ -250,7 +302,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     @staticmethod
     def _get_shared_vram() -> str:
         """
-        Get the Shared System Memory for the GPU using dxdiag.
+        Get the Shared System Memory for the GPU when available.
 
         Uses dxdiag to export diagnostic info and parses the
         "Shared System Memory" field which accurately reports
@@ -262,6 +314,9 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             The shared VRAM (e.g., "8144 MB"),
             or an empty string if detection fails.
         """
+        if IS_LINUX:
+            return ''
+
         import tempfile
 
         # Create a temporary file for dxdiag output
@@ -322,7 +377,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     @staticmethod
     def _get_short_product_id() -> str:
         """
-        Get the four-digit hexadecimal short product ID using PowerShell Get-CimInstance.
+        Get the short product identifier for the current platform.
 
         Returns
         -------
@@ -330,6 +385,14 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             The short product ID from Win32_BaseBoard (e.g., "8E0D"),
             or an empty string if detection fails.
         """
+        if IS_LINUX:
+            board_name = '/sys/devices/virtual/dmi/id/board_name'
+            try:
+                with open(board_name, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+            except OSError:
+                return ''
+
         cmd = [
             'powershell', '-NoProfile', '-Command',
             '(Get-CimInstance -ClassName Win32_BaseBoard).Product'
@@ -472,9 +535,49 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         return new_system_info
 
     @staticmethod
+    def _get_linux_system_info() -> Dict[str, str]:
+        """
+        Collect a compact Linux system information dictionary.
+        """
+        uname = platform.uname()
+        pretty_name = ''
+        os_release = '/etc/os-release'
+        if os.path.exists(os_release):
+            try:
+                with open(os_release, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.startswith('PRETTY_NAME='):
+                            pretty_name = line.split('=', 1)[1].strip().strip('"')
+                            break
+            except OSError:
+                pass
+
+        cpu_count = psutil.cpu_count(logical=True) or 0
+        system_info: Dict[str, str] = {
+            'Host Name': uname.node,
+            'OS Name': 'Linux',
+            'OS Version': pretty_name or uname.release,
+            'Kernel': uname.release,
+            'Architecture': uname.machine,
+            'Processor(s)': str(cpu_count),
+        }
+
+        product_name = '/sys/devices/virtual/dmi/id/product_name'
+        if os.path.exists(product_name):
+            try:
+                with open(product_name, 'r', encoding='utf-8') as f:
+                    value = f.read().strip()
+                    if value:
+                        system_info['System Model'] = value
+            except OSError:
+                pass
+                
+        return system_info
+
+    @staticmethod
     def _get_system_info() -> Dict[str, str]:
         """
-        Run the Windows systeminfo command and return its output as a dictionary.
+        Run the platform-specific system information collection and return a dictionary.
 
         Also collects CPU, GPU, GPU Driver Version, GPU Driver Date, Shared VRAM,
         Power Profile, Power Mode, and Short Product ID information via PowerShell
@@ -490,6 +593,24 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
             "GPU Driver Date", "Shared VRAM", "Power Profile", and "Power Mode" fields.
             Returns an empty dictionary if the command fails or is unavailable.
         """
+        if IS_LINUX:
+            system_info = ResourceMonitor._get_linux_system_info()
+            short_product_id = ResourceMonitor._get_short_product_id()
+            cpu_info = ResourceMonitor._get_cpu_info()
+            gpu_info = ResourceMonitor._get_gpu_info()
+            gpu_driver_version = ResourceMonitor._get_gpu_driver_version()
+            gpu_driver_date = ResourceMonitor._get_gpu_driver_date()
+            shared_vram = ResourceMonitor._get_shared_vram()
+            return ResourceMonitor._insert_product_info(system_info,
+                                                        cpu_info,
+                                                        gpu_info,
+                                                        gpu_driver_version,
+                                                        gpu_driver_date,
+                                                        shared_vram,
+                                                        get_power_profile(),
+                                                        get_power_mode(),
+                                                        short_product_id)
+
         stdout, stderr, returncode = execute_command(['systeminfo'])
 
         if returncode != 0:
@@ -563,13 +684,11 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         """
         Return (utilization_percent, memory_gib) from GPUSampler.
 
-        Delegates to the GPUSampler library module and extracts the first adapter's
-        current utilization (%) and memory (GiB). This assumes at least one GPU
-        adapter is available and the sampler returns non-empty stats.
+        Delegates to the GPUSampler library module and returns the overall
+        utilization (%) and total memory (GiB) reported by the sampler.
         """
-        _, _, adapter_stats = gpu_sampler.sample()
-        stats_dict = adapter_stats[0]
-        return stats_dict["utilization_percent"], stats_dict["memory_gb"]
+        gpu_utilization_pct, gpu_memory_gb, _ = gpu_sampler.sample()
+        return gpu_utilization_pct, gpu_memory_gb
 
     @staticmethod
     def _get_npu_memory(npu_sampler: NPUSampler) -> float:
@@ -587,14 +706,30 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     # --------------------------------------
 
     @staticmethod
+    def _configure_child_logging(log_level: int) -> None:
+        """
+        Configure logging in spawned child processes.
+
+        Spawned processes do not reliably inherit parent logging configuration,
+        so each monitor process configures its own root logger.
+        """
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            force=True,
+        )
+
+    @staticmethod
     def _memory_monitor_process(
         stop_event: "multiprocessing.synchronize.Event",
         stats_ns: "multiprocessing.managers.Namespace",
-        interval_sec: float
+        interval_sec: float,
+        log_level: int = logging.INFO,
     ) -> None:
         """
         Continuously sample used RAM and append [timestamp, value] to stats_ns.
         """
+        ResourceMonitor._configure_child_logging(log_level)
         while not stop_event.is_set():
             end_time = time.perf_counter() + interval_sec
             used_gb = ResourceMonitor._get_used_memory_gb()
@@ -609,11 +744,13 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     def _cpu_monitor_process(
         stop_event: "multiprocessing.synchronize.Event",
         stats_ns: "multiprocessing.managers.Namespace",
-        interval_sec: float
+        interval_sec: float,
+        log_level: int = logging.INFO,
     ) -> None:
         """
         Continuously sample average CPU utilization and append [timestamp, value].
         """
+        ResourceMonitor._configure_child_logging(log_level)
         while not stop_event.is_set():
             end_time = time.perf_counter() + interval_sec
             cpu_utilization_pct = ResourceMonitor._get_average_cpu_utilization()
@@ -628,11 +765,13 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     def _gpu_monitor_process(
         stop_event: "multiprocessing.synchronize.Event",
         stats_ns: "multiprocessing.managers.Namespace",
-        interval_sec: float
+        interval_sec: float,
+        log_level: int = logging.INFO,
     ) -> None:
         """
         Continuously sample GPU utilization and memory; append [timestamp, value] pairs.
         """
+        ResourceMonitor._configure_child_logging(log_level)
         gpu_sampler = GPUSampler()
         while not stop_event.is_set():
             end_time = time.perf_counter() + interval_sec
@@ -650,7 +789,8 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
     def _npu_monitor_process(
         stop_event: "multiprocessing.synchronize.Event",
         stats_ns: "multiprocessing.managers.Namespace",
-        interval_sec: float = 0.2
+        interval_sec: float = 0.2,
+        log_level: int = logging.INFO,
     ) -> None:
         """
         Continuously sample NPU memory; append [timestamp, value] pairs.
@@ -658,8 +798,11 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         If no NPU is detected, writes a single zero sample and returns immediately
         so the wait loop in monitor_process() does not block indefinitely.
         """
+        ResourceMonitor._configure_child_logging(log_level)
         npu_sampler = NPUSampler()
+        logger.debug("[NPU] Monitor process initialized sampler: has_npu=%s", npu_sampler.has_npu)
         if not npu_sampler.has_npu:
+            logger.debug("[NPU] No NPU detected in monitor process; recording single zero sample")
             timestamp = time.perf_counter()
             stats_ns.npu_memory_gb.append([timestamp, 0.0])
             return
@@ -793,7 +936,10 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         return normalized
 
     @staticmethod
-    def _start_resource_monitors(sample_interval_s: float) -> Tuple[List[Any], Any, Any, Any]:
+    def _start_resource_monitors(
+        sample_interval_s: float,
+        monitor_log_level: int = logging.INFO,
+    ) -> Tuple[List[Any], Any, Any, Any]:
         """
         Start background processes for memory, CPU, and GPU sampling.
 
@@ -820,7 +966,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         mem_proc = ctx.Process(
             target=ResourceMonitor._memory_monitor_process,
             args=(stop_event, stats_ns),
-            kwargs={"interval_sec": sample_interval_s},
+            kwargs={"interval_sec": sample_interval_s, "log_level": monitor_log_level},
             daemon=True,
         )
 
@@ -828,7 +974,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         cpu_proc = ctx.Process(
             target=ResourceMonitor._cpu_monitor_process,
             args=(stop_event, stats_ns),
-            kwargs={"interval_sec": sample_interval_s},
+            kwargs={"interval_sec": sample_interval_s, "log_level": monitor_log_level},
             daemon=True,
         )
 
@@ -836,7 +982,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         gpu_proc = ctx.Process(
             target=ResourceMonitor._gpu_monitor_process,
             args=(stop_event, stats_ns),
-            kwargs={"interval_sec": sample_interval_s},
+            kwargs={"interval_sec": sample_interval_s, "log_level": monitor_log_level},
             daemon=True,
         )
 
@@ -844,7 +990,7 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         npu_proc = ctx.Process(
             target=ResourceMonitor._npu_monitor_process,
             args=(stop_event, stats_ns),
-            kwargs={"interval_sec": sample_interval_s},
+            kwargs={"interval_sec": sample_interval_s, "log_level": monitor_log_level},
             daemon=True,
         )
 
@@ -964,8 +1110,9 @@ class ResourceMonitor:     # pylint: disable=too-few-public-methods
         system_info = ResourceMonitor._get_system_info()
 
         # Start the resource monitor
+        monitor_log_level = logging.getLogger().getEffectiveLevel()
         proc_list, stats_ns, stop_event, ctx = \
-            ResourceMonitor._start_resource_monitors(sample_interval_s)
+            ResourceMonitor._start_resource_monitors(sample_interval_s, monitor_log_level)
 
         # Create a queue for the worker to publish its result back to the parent.
         result_queue: "multiprocessing.queues.Queue" = ctx.Queue()
@@ -1044,7 +1191,7 @@ def run_shell_command_worker(
     result_queue : multiprocessing.queues.Queue
         Queue to put the result dictionary into.
     """
-    cmd = cmd_str.split()
+    cmd = shlex.split(cmd_str, posix=not IS_WINDOWS)
 
     # Special case: if we're running waiter.py, always echo stderr in real time.
     # This keeps the console responsive/useful for interactive monitoring runs.
@@ -1101,15 +1248,21 @@ def _parse_cli_args(argv: List[str]) -> argparse.Namespace:
         "-p", "--power-mode",
         type=str,
         default=None,
-        choices=["best-performance", "balanced", "best-power-efficiency"],
-        help="Set Windows power mode before running the command. "
-             "Choices: best-performance, balanced, best-power-efficiency."
+        choices=["performance", "balanced", "power-saver"],
+        help="Set Windows power mode before running the command (Windows only). "
+             "Choices: performance, balanced, power-saver."
     )
     # Accept remainder after '--' as the command to run.
     parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
         help="Use '-- <command and args>' form to pass a command without quoting."
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose debug logging (including monitor child processes)."
     )
     return parser.parse_args(argv)
 
@@ -1168,17 +1321,14 @@ def main(argv: List[str]) -> int:
     """
     Perform resource monitoring on an arbitrary command.
     """
-    # This tool only runs in Windows environments. Exit early on other platforms.
     check_python_version()
-    if platform.system() != 'Windows':
-        print('Sorry, but this script only runs on Windows.')
-        sys.exit(1)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
     ns = _parse_cli_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if ns.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
     cmd = _extract_command_from_args(ns)
 
     # Save the initial power mode so we can restore it when done
@@ -1187,11 +1337,10 @@ def main(argv: List[str]) -> int:
 
     # Set power mode if requested
     if ns.power_mode:
-        # Convert CLI format to API format
         mode_map = {
-            "best-performance": "Best Performance",
+            "performance": "Performance",
             "balanced": "Balanced",
-            "best-power-efficiency": "Best Power Efficiency",
+            "power-saver": "Power Saver",
         }
         target_mode = mode_map.get(ns.power_mode)
         if target_mode:

@@ -42,7 +42,7 @@ Expected environment
 - Requires `matplotlib` for generating PDF plots (default).
 - Requires `plotly` for generating interactive HTML plots (optional).
 - Requires library modules: json_utils, plot_pdf_stats, platform_support.
-- Designed exclusively for Windows 10/11 environments.
+- Supports Windows and Linux.
 
 Imports
 -------
@@ -89,7 +89,7 @@ except ImportError:
 
 # Import shared benchmark utilities
 try:
-    from mass_bench_common import check_python_version, check_windows_platform
+    from mass_bench_common import check_python_version
 except ImportError:
     raise RuntimeError("Cannot find mass_bench_common module.") from None
 
@@ -621,9 +621,7 @@ def main() -> int:
     """
     Parse arguments and generate plots from JSON benchmark files.
     """
-    # This tool only runs in Windows environments. Exit early on other platforms.
     check_python_version()
-    check_windows_platform()
 
     parser = argparse.ArgumentParser(
         description="Generate overlay plots from JSON benchmark files.",

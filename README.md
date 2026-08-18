@@ -1,8 +1,8 @@
-# AI Models Benchmarking and Resource Monitoring Tools for Windows
+# AI Models Benchmarking and Resource Monitoring Tools for Windows and Linux
 
 Includes a general-purpose CLI resource monitor (`resource_monitor.py`), llama.cpp benchmarking orchestrators (`mass_llama_bench.py`, `mass_llama_server_benchy.py`, `mass_benchmark_embeddings.py`, `mass_benchy.py`), a Lemonade server benchmarking orchestrator (`mass_lemonade_benchy.py`), and a plotting tool (`plot_json_benchmarks.py`).
 
-> **Note:** This toolset is designed exclusively for Windows environments.
+> **Note:** This toolset supports both Windows and Linux environments. 
 
 ## Table of Contents
 
@@ -20,10 +20,12 @@ Includes a general-purpose CLI resource monitor (`resource_monitor.py`), llama.c
   * [Plot JSON Benchmarks](#plot-json-benchmarks)
 
 * [JSON File Naming Convention](#json-file-naming-convention)
+* [Known Issue with Monitoring NPU Memory on Linux](#known-issue-with-monitoring-npu-memory-on-linux)
 
 ## Features
 
 * 📊 **Resource Monitoring**: Real-time CPU, RAM, GPU, and NPU utilization tracking during execution
+* 🐧 **Cross-Platform**: Runs on both Windows and Linux, using PDH counters on Windows and DRM/sysfs (`/sys/class/accel`, `/sys/class/drm`) telemetry on Linux for GPU and NPU monitoring
 * 🚀 **Batch Benchmarking**: Run benchmarks across multiple models, installations, endpoints, and configurations
 * 🎯 **Flexible Configuration**: Support for multiple option sets to test different configurations
 * 🖥️ **Server Management**: Launch and manage llama-server instances automatically (`mass_llama_server_benchy.py`)
@@ -36,31 +38,39 @@ Includes a general-purpose CLI resource monitor (`resource_monitor.py`), llama.c
 ### Required Software
 
 * **Python**: 3.10 or later (platform-specific build required: x64 for Intel/AMD systems, ARM64 for ARM-based systems)
-* **Operating System**: Windows 10/11
+* **Operating System**: Windows 10/11 or Linux
+* **Linux power mode support (optional)**: `powerprofilesctl` (from `power-profiles-daemon`) is required if you want `-p/--power-mode` to change Linux power modes
 
 ### Required Python Packages
 
 * `psutil` - For CPU and RAM monitoring
-* `pywin32` — For Windows GPU monitoring via PDH
+* `pywin32` — For Windows GPU monitoring via PDH (Windows only; not required on Linux)
 * `matplotlib` — For generating PDF plots
 * `json-repair` — For robust parsing of llama-bench JSON output
 * `plotly` — For generating interactive HTML plots
+* `llama-benchy` — CLI required for some benchmarking workflows.
 
 ## Installation
 
-### Clone and enter the repository from a Powershell command window
+### Clone and enter the repository
 
-`https://github.com/HPInc/ai-models-performance-measurement-suite`
+git clone https://github.com/HPInc/ai-models-performance-measurement-suite
 
-`Set-Location tools\ai-models-performance-measurement-suite`
+cd ai-models-performance-measurement-suite
 
 ### One-step setup
 
-`./setup.ps1`
+#### Windows
 
-By default, setup installs Python dependencies and verifies that `llama-benchy` is available in `PATH`.
+python -m pip install -r windows_requirements.txt
 
-If `llama-benchy` is not already installed, `setup.ps1` installs it automatically.
+#### Linux
+
+python3 -m venv .venv
+
+source .venv/bin/activate
+
+python3 -m pip install -r linux_requirements.txt
 
 ### Verify Installation
 
@@ -78,7 +88,7 @@ If `llama-benchy` is not already installed, `setup.ps1` installs it automaticall
 * `-o, --output-dir`: Optional directory to write JSON results
 * `-e, --echo-stderr`: Echo stderr to console instead of capturing
 * `-n, --normalize-resource-data`: Normalize resource data by subtracting prestart values from each data point
-* `-p, --power-mode`: Set Windows power mode before running the command (choices: `best-performance`, `balanced`, `best-power-efficiency`)
+* `-p, --power-mode`: Set power mode before running the command (Windows supported; Linux requires `powerprofilesctl`; choices: `performance`, `balanced`, `power-saver`)
 * `--cmd`: Shell command string to execute (alternative to using `--` remainder)
 
 #### Output JSON File Structure
@@ -87,8 +97,7 @@ If `llama-benchy` is not already installed, `setup.ps1` installs it automaticall
    "command": <command that was executed>,
    "result:" <STDOUT and STDERR output from the command>,
    "stats": <JSON dictionary of runtime statistics (CPU, RAM, GPU, NPU usage)>,
-   "system_info": <JSON dictionary of system information from Windows systeminfo, 
-                  plus additional info such as GPU driver information>	
+   "system_info": <JSON dictionary of system information. Content is OS dependent.>
 }
 ```
 
@@ -136,7 +145,7 @@ Monitor a background/idle system state using `waiter.py` (waits until you press 
 * `-f, --fixed-options`: Fixed options to pass to llama-bench for all runs, quoted. Unlike `-e`, this does not create additional benchmark runs; the options are applied to every run. Only one `-f` parameter is allowed.
 * `-s, --sample-interval`: Seconds between resource monitoring samples (range: 0.2-1.0, default: 0.2)
 * `-r, --runs`: Number of full repeated runs per configuration (default: `1`)
-* `-p, --power-mode`: Set Windows power mode before running benchmarks (choices: `best-performance`, `balanced`, `best-power-efficiency`; can be specified multiple times to create separate runs)
+* `-p, --power-mode`: Set power mode before running benchmarks (Windows supported; Linux requires `powerprofilesctl`; choices: `performance`, `balanced`, `power-saver`; can be specified multiple times to create separate runs)
 * `-d, --description`: Custom description for the benchmark run, stored in convenience_metrics and used as a label differentiator in plots (default: `llama-bench`)
 * `--reset-environment`: Reset benchmark environment (best effort) before each llama-bench run
 * `-v, --verbose`: Enable verbose logging with debug output and append `-v` to the underlying `llama-bench` command
@@ -148,8 +157,7 @@ Monitor a background/idle system state using `waiter.py` (waits until you press 
    "llama_bench_results": <llama-bench results from STDOUT formatted as a JSON dictionary>,
    "convenience_metrics": <JSON dictionary of convenience metrics>,
    "runtime_stats": <JSON dictionary of runtime statistics (CPU, RAM, GPU, NPU usage)>,
-   "system_info": <JSON dictionary of system information from Windows systeminfo, 
-                  plus additional info such as GPU driver information>	
+   "system_info": <JSON dictionary of system information. Content is OS dependent.>
 }
 ```
 
@@ -157,21 +165,17 @@ Monitor a background/idle system state using `waiter.py` (waits until you press 
 
 ##### Example 1: Single Model, Single Installation
 
-`python mass_llama_bench.py -o .\output -m C:\models\gpt-oss-20B.gguf -l C:\llama.cpp`
+`python mass_llama_bench.py -o .\output -m \models\gpt-oss-20B.gguf -l \llama-cpp-dir`
 
-##### Example 2: Multiple Models from Directory
+##### Example 2: Multiple Installations with Options
 
-`python mass_llama_bench.py -o .\results  -l C:\llama.cpp -m C:\models\gpt-oss-20B.gguf` 
-
-##### Example 3: Multiple Installations with Options
-
-`python mass_llama_bench.py -o C:\json\testrun  -m C:\models\gpt-oss-20B.gguf -l C:\llama-b6876-bin-win-vulkan-x64 -l C:\llama-b6877-bin-win-cuda-x64 -e "-fa 0" -e "-fa 1"`
+`python mass_llama_bench.py -o \json\testrun  -m \models\gpt-oss-20B.gguf -l \llama-b6876-bin-win-vulkan-x64 -l \llama-b6877-bin-win-cuda-x64 -e "-fa 0" -e "-fa 1"`
 
 This runs benchmarks with flash attention disabled (`-fa 0`) and enabled (`-fa 1`), creating separate test runs for each option combination.
 
-##### Example 4: Fixed Option Applied to All Runs
+##### Example 3: Fixed Option Applied to All Runs
 
-`python mass_llama_bench.py -o .\results -l C:\llama.cpp -m C:\models\gpt-oss-20B.gguf -f "-ngl 99" -e "-fa 0" -e "-fa 1"`
+`python mass_llama_bench.py -o .\results -l \llama-cpp-dir -m \models\gpt-oss-20B.gguf -f "-ngl 99" -e "-fa 0" -e "-fa 1"`
 
 This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs for flash attention disabled and enabled.
 
@@ -202,7 +206,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 * `-j, --joint-options`: Combined server and benchy options in one string, separated by a comma. The part before the comma is passed to llama-server; the part after the comma is passed to llama-benchy. If no comma is present, the entire string is treated as llama-benchy options. Multiple `-j` parameters create separate benchmark runs. Example: `-j "-ngl 99,--pp 128"`
 * `-i, --sample-interval`: Seconds between resource monitoring samples (default: 0.2)
 * `-r, --runs`: Number of full repeated runs per configuration (default: `1`)
-* `-p, --power-mode`: Set Windows power mode before running benchmarks (choices: `best-performance`, `balanced`, `best-power-efficiency`; can be specified multiple times)
+* `-p, --power-mode`: Set power mode before running benchmarks (Windows supported; Linux requires `powerprofilesctl`; choices: `performance`, `balanced`, `power-saver`; can be specified multiple times)
 * `-d, --description`: Custom description for the benchmark run, stored in convenience_metrics and used as a label differentiator in plots (default: `llama-server`)
 * `--reset-environment`: Reset benchmark environment (best effort) before each server launch
 * `-v, --verbose`: Enable verbose logging with debug output and append `-v` to the underlying `llama-server` command
@@ -214,8 +218,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
    "llama_benchy_results": <llama-benchy results from STDOUT formatted as a JSON dictionary>,
    "convenience_metrics": <JSON dictionary of convenience metrics>,
    "runtime_stats": <JSON dictionary of runtime statistics (CPU, RAM, GPU, NPU usage)>,
-   "system_info": <JSON dictionary of system information from Windows systeminfo, 
-                  plus additional info such as GPU driver information>	
+   "system_info": <JSON dictionary of system information. Content is OS dependent.>
 }
 ```
 
@@ -263,7 +266,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 * `-j, --joint-options`: Combined server and benchmark options in one string, separated by a comma. The part before the comma is passed to llama-server; the part after the comma is passed to `benchmark_embeddings.py`. If no comma is present, the entire string is treated as benchmark options. Multiple `-j` parameters create separate benchmark runs. Example: `-j "-ngl 99,--samples 1000"`
 * `-i, --sample-interval`: Seconds between resource monitoring samples (default: 0.2)
 * `-r, --runs`: Number of full repeated runs per configuration (default: `1`)
-* `-p, --power-mode`: Set Windows power mode before running benchmarks (choices: `best-performance`, `balanced`, `best-power-efficiency`; can be specified multiple times)
+* `-p, --power-mode`: Set power mode before running benchmarks (Windows supported; Linux requires `powerprofilesctl`; choices: `performance`, `balanced`, `power-saver`; can be specified multiple times)
 * `-d, --description`: Custom description for the benchmark run, stored in convenience_metrics and used as a label differentiator in plots (default: `benchmark-embeddings`)
 * `--reset-environment`: Reset benchmark environment (best effort) before each server launch
 * `-v, --verbose`: Enable verbose logging with debug output and append `-v` to the underlying `llama-server` command
@@ -275,8 +278,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
    "embedding_bench_results": <embeddings benchmark results from STDOUT formatted as a JSON dictionary>,
    "convenience_metrics": <JSON dictionary of convenience metrics>,
    "runtime_stats": <JSON dictionary of runtime statistics (CPU, RAM, GPU, NPU usage)>,
-   "system_info": <JSON dictionary of system information from Windows systeminfo, 
-                  plus additional info such as GPU driver information>	
+   "system_info": <JSON dictionary of system information. Content is OS dependent.>
 }
 ```
 
@@ -322,7 +324,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 * `-f, --fixed-options`: Fixed options to pass to llama-benchy for all runs, quoted. Only one `-f` parameter is allowed.
 * `-j, --joint-options`: Combined server and benchy options in one string, separated by a comma. The part before the comma is passed to lemonade load; the part after the comma is passed to llama-benchy. If no comma is present, the entire string is treated as llama-benchy options. Multiple `-j` parameters create separate benchmark runs. Example: `-j "--llamacpp vulkan,--pp 128"`
 * `-i, --sample-interval`: Seconds between resource monitoring samples (default: 0.2)
-* `-p, --power-mode`: Set Windows power mode before running benchmarks (choices: `best-performance`, `balanced`, `best-power-efficiency`; can be specified multiple times)
+* `-p, --power-mode`: Set power mode before running benchmarks (Windows supported; Linux requires `powerprofilesctl`; choices: `performance`, `balanced`, `power-saver`; can be specified multiple times)
 * `-d, --description`: Custom description for the benchmark run, stored in convenience_metrics and used as a label differentiator in plots (default: `lemonade_server`)
 * `--reset-environment`: Reset benchmark environment (best effort) before each model load
 * `-v, --verbose`: Enable verbose logging with debug output
@@ -334,8 +336,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
    "llama_benchy_results": <llama-benchy results from STDOUT formatted as a JSON dictionary>,
    "convenience_metrics": <JSON dictionary of convenience metrics>,
    "runtime_stats": <JSON dictionary of runtime statistics (CPU, RAM, GPU, NPU usage)>,
-   "system_info": <JSON dictionary of system information from Windows systeminfo, 
-                  plus additional info such as GPU driver information>	
+   "system_info": <JSON dictionary of system information. Content is OS dependent.>
 }
 ```
 #### Examples
@@ -352,9 +353,9 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 
 `python mass_lemonade_benchy.py -m ModelName -o \json\testrun -c "--llamacpp vulkan" -s "--context-length 2048" -s "--context-length 4096"`
 
-##### Example 4: Multiple Power Modes
+##### Example 4: Multiple Power Modes (Windows or Linux with `powerprofilesctl`)
 
-`python mass_lemonade_benchy.py -m ModelName -o \json\testrun -p best-performance -p balanced`
+`python mass_lemonade_benchy.py -m ModelName -o \json\testrun -p performance -p balanced`
 
 ### Mass Benchy
 
@@ -382,7 +383,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
 * `-e, --extra-options`: Additional options to pass to llama-benchy, quoted (can be specified multiple times to create separate runs)
 * `-f, --fixed-options`: Fixed options to pass to llama-benchy for all runs, quoted. Only one `-f` parameter is allowed.
 * `-i, --sample-interval`: Seconds between resource monitoring samples (default: 0.2)
-* `-p, --power-mode`: Set Windows power mode before running benchmarks (choices: `best-performance`, `balanced`, `best-power-efficiency`; can be specified multiple times)
+* `-p, --power-mode`: Set power mode before running benchmarks (Windows supported; Linux requires `powerprofilesctl`; choices: `performance`, `balanced`, `power-saver`; can be specified multiple times)
 * `-d, --description`: Custom description for the benchmark run, stored in convenience_metrics and used as a label differentiator in plots (default: `endpoint`)
 * `-v, --verbose`: Enable verbose logging with debug output
 
@@ -393,8 +394,7 @@ This applies 99 GPU layers (`-ngl 99`) to all runs, while creating separate runs
    "llama_benchy_results": <llama-benchy results from STDOUT formatted as a JSON dictionary>,
    "convenience_metrics": <JSON dictionary of convenience metrics>,
    "runtime_stats": <JSON dictionary of runtime statistics (CPU, RAM, GPU, NPU usage)>,
-   "system_info": <JSON dictionary of system information from Windows systeminfo, 
-                  plus additional info such as GPU driver information>	
+   "system_info": <JSON dictionary of system information. Content is OS dependent.>
 }
 ```
 
@@ -491,6 +491,10 @@ Examples:
 * `emb-server_MYHOST_b9048_emb-model.gguf_Efficiency.json`
 * `lemonade_server_MYHOST_ModelName_Performance.json`
 * `endpoint_MYHOST_localhost_8080_Balanced.json`
+
+### Known Issue with Monitoring NPU Memory on Linux
+
+You may need to run with elevated privileges to access `/sys/class/accel` for NPU memory monitoring on Linux. If your NPU memory measurements are all zero, and whatever you are doing uses the NPU, consider running with 'sudo env PATH="$PATH"'.
 
 ## Contact
 
