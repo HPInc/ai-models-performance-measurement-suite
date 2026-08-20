@@ -56,17 +56,18 @@ import logging
 import os
 import platform
 import re
+import shlex
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 
 from typing import List, Optional
 
 IS_WINDOWS = platform.system() == 'Windows'
-IS_LINUX = platform.system() == 'Linux'
 
 # Configure a module-level logger. The main() routine will set the global
 # logging level and format via logging.basicConfig().
@@ -96,6 +97,13 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 lib_dir = os.path.join(script_dir, 'lib')
 if lib_dir not in sys.path:
     sys.path.insert(0, lib_dir)
+
+LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT = os.path.join(
+    lib_dir, 'llama_server_restart_supervisor.py'
+)
+LLAMA_SERVER_RESTART_CMD_SCRIPT = os.path.join(
+    lib_dir, 'restart_llama_server.py'
+)
 
 # Import platform-specific helpers for command execution, directory changes, and
 # platform detection. Keep failures explicit for easier troubleshooting.
@@ -165,6 +173,33 @@ def _find_llama_server_binary(install_dir: str) -> Optional[str]:
         if os.path.isfile(server_path):
             return server_path
     return None
+
+
+def _has_post_run_cmd_option(options: List[str]) -> bool:
+    """Return True when llama-benchy options already include --post-run-cmd."""
+    return any(
+        opt == '--post-run-cmd' or opt.startswith('--post-run-cmd=')
+        for opt in options
+    )
+
+
+def _build_restart_post_run_cmd(pid_file: str, server_url: str) -> Optional[str]:
+    """Build a cross-platform --post-run-cmd value that restarts llama-server."""
+    if not os.path.isfile(LLAMA_SERVER_RESTART_CMD_SCRIPT):
+        logger.warning('Restart command script not found: %s', LLAMA_SERVER_RESTART_CMD_SCRIPT)
+        return None
+
+    command_parts = [
+        sys.executable,
+        LLAMA_SERVER_RESTART_CMD_SCRIPT,
+        '--pid-file',
+        pid_file,
+        '--server-url',
+        server_url,
+    ]
+    if IS_WINDOWS:
+        return subprocess.list2cmdline(command_parts)
+    return shlex.join(command_parts)
 
 
 def find_llama_server_installs(llama_dirs: Optional[List[str]]) -> List[str]:
@@ -362,6 +397,27 @@ def _worker_server_and_llama_benchy(
         'reported_model': None
     }
 
+    pid_fd, supervisor_pid_file = tempfile.mkstemp(
+        prefix='llama_server_supervisor_',
+        suffix='.pid'
+    )
+    os.close(pid_fd)
+
+    command_prefix: Optional[List[str]] = None
+    if os.path.isfile(LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT):
+        command_prefix = [
+            sys.executable,
+            LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT,
+            '--pid-file',
+            supervisor_pid_file,
+            '--'
+        ]
+    else:
+        logger.warning(
+            'Restart supervisor script not found; server restart post-run command will be skipped: %s',
+            LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT
+        )
+
     server = LlamaServerProcess(
         install_dir,
         server_model,
@@ -369,7 +425,8 @@ def _worker_server_and_llama_benchy(
         find_server_binary_fn=_find_llama_server_binary,
         server_url_pattern=SERVER_URL_PATTERN,
         is_windows=IS_WINDOWS,
-        verbose=verbose
+        verbose=verbose,
+        command_prefix=command_prefix
     )
 
     try:
@@ -396,6 +453,12 @@ def _worker_server_and_llama_benchy(
                '--save-result', temp_output_path]
         if benchy_model:
             cmd.extend(['--model', benchy_model])
+
+        if not _has_post_run_cmd_option(benchy_options) and command_prefix:
+            restart_post_run_cmd = _build_restart_post_run_cmd(supervisor_pid_file, server_url)
+            if restart_post_run_cmd:
+                cmd.extend(['--post-run-cmd', restart_post_run_cmd])
+
         cmd.extend(benchy_options)
 
         logger.info("Running llama-benchy command: %s", ' '.join(cmd))
@@ -427,6 +490,11 @@ def _worker_server_and_llama_benchy(
         logger.error("Failed to run llama-server + llama-benchy worker: %s", exc)
     finally:
         server.stop()
+        try:
+            if os.path.isfile(supervisor_pid_file):
+                os.remove(supervisor_pid_file)
+        except OSError:
+            pass
 
     result_queue.put(result)
 

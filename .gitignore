@@ -2,3 +2,5 @@
 lib/__pycache__/
 *.pyc
 .vs/
+logs/
+.github/copilot-instructions.md
