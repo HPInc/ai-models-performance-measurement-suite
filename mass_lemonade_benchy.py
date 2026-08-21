@@ -56,16 +56,12 @@ import argparse
 import json
 import logging
 import os
-import platform
 import socket
 import subprocess
 import sys
 import textwrap
 
 from typing import List, Optional
-
-IS_WINDOWS = platform.system() == 'Windows'
-IS_LINUX = platform.system() == 'Linux'
 
 # Configure a module-level logger. The main() routine will set the global
 # logging level and format via logging.basicConfig().

@@ -19,13 +19,9 @@ import glob
 import json
 import logging
 import os
-import platform
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
-
-IS_WINDOWS = platform.system() == 'Windows'
-IS_LINUX = platform.system() == 'Linux'
 
 # Import power configuration utilities for setting power mode.
 try:
