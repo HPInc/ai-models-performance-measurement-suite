@@ -23,9 +23,7 @@ from __future__ import annotations
 import argparse
 import json as _json
 import logging
-import os
 import platform
-import shutil
 import sys
 import urllib.request
 
@@ -213,34 +211,6 @@ def setup_logging(verbose: bool = False) -> None:
         format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
         force=True
     )
-
-
-def clear_output_leaf_directory(output_dir: str) -> bool:
-    """Create and clear the output leaf directory used for JSON result files."""
-    if not output_dir:
-        logger.error("Output directory path is empty.")
-        return False
-
-    leaf_dir = os.path.abspath(output_dir)
-
-    try:
-        os.makedirs(leaf_dir, exist_ok=True)
-    except OSError as exc:
-        logger.error("Failed to create output directory %s: %s", leaf_dir, exc)
-        return False
-
-    try:
-        for entry in os.listdir(leaf_dir):
-            entry_path = os.path.join(leaf_dir, entry)
-            if os.path.isdir(entry_path) and not os.path.islink(entry_path):
-                shutil.rmtree(entry_path)
-            else:
-                os.remove(entry_path)
-        logger.info("Cleared output directory contents: %s", leaf_dir)
-        return True
-    except OSError as exc:
-        logger.error("Failed to clear output directory contents %s: %s", leaf_dir, exc)
-        return False
 
 
 # Minimum Python version required by this toolset.

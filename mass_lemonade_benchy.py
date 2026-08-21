@@ -125,7 +125,6 @@ try:
         POWER_MODE_MAP,
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
-        clear_output_leaf_directory,
         parse_model_spec,
         setup_logging,
         check_python_version,
@@ -981,9 +980,6 @@ def main():
     args = parser.parse_args(preprocessed_args)
 
     setup_logging(args.verbose)
-
-    if not clear_output_leaf_directory(args.output_dir):
-        sys.exit(1)
 
     # Save the initial power mode so we can restore it when done.
     # This is important when -p option is used to run benchmarks across multiple

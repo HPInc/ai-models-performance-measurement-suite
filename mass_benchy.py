@@ -117,7 +117,6 @@ try:
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
-        clear_output_leaf_directory,
         setup_logging,
         check_python_version,
     )
@@ -690,9 +689,6 @@ def main():
     args = parser.parse_args(preprocessed_args)
 
     setup_logging(args.verbose)
-
-    if not clear_output_leaf_directory(args.output_dir):
-        sys.exit(1)
 
     # Save the initial power mode so we can restore it when done.
     initial_power_mode = get_power_mode()

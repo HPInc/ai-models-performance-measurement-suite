@@ -143,7 +143,6 @@ try:
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
-        clear_output_leaf_directory,
         parse_model_spec,
         setup_logging,
         check_python_version,
