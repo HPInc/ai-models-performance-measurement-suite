@@ -98,9 +98,6 @@ lib_dir = os.path.join(script_dir, 'lib')
 if lib_dir not in sys.path:
     sys.path.insert(0, lib_dir)
 
-LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT = os.path.join(
-    lib_dir, 'llama_server_restart_supervisor.py'
-)
 LLAMA_SERVER_RESTART_CMD_SCRIPT = os.path.join(
     lib_dir, 'restart_llama_server.py'
 )
@@ -146,8 +143,8 @@ try:
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
+        clear_output_leaf_directory,
         parse_model_spec,
-        setup_logging,
         check_python_version,
     )
 except ImportError:
@@ -183,7 +180,12 @@ def _has_post_run_cmd_option(options: List[str]) -> bool:
     )
 
 
-def _build_restart_post_run_cmd(pid_file: str, server_url: str) -> Optional[str]:
+def _build_restart_post_run_cmd(
+    server_pid: int,
+    server_url: str,
+    server_cwd: str,
+    server_cmd: List[str]
+) -> Optional[str]:
     """Build a cross-platform --post-run-cmd value that restarts llama-server."""
     if not os.path.isfile(LLAMA_SERVER_RESTART_CMD_SCRIPT):
         logger.warning('Restart command script not found: %s', LLAMA_SERVER_RESTART_CMD_SCRIPT)
@@ -192,10 +194,14 @@ def _build_restart_post_run_cmd(pid_file: str, server_url: str) -> Optional[str]
     command_parts = [
         sys.executable,
         LLAMA_SERVER_RESTART_CMD_SCRIPT,
-        '--pid-file',
-        pid_file,
+        '--server-pid',
+        str(server_pid),
         '--server-url',
         server_url,
+        '--server-cwd',
+        server_cwd,
+        '--server-cmd-json',
+        json.dumps(server_cmd),
     ]
     if IS_WINDOWS:
         return subprocess.list2cmdline(command_parts)
@@ -240,8 +246,11 @@ def find_llama_server_installs(llama_dirs: Optional[List[str]]) -> List[str]:
 
 
 def check_existing_llama_server_running() -> bool:
-    """Detect an existing llama-server process and abort before launching a new one."""
-    try:
+    """Wait briefly for existing llama-server processes to exit before aborting launch."""
+    retry_interval_s = 1.0
+    max_wait_s = 20.0
+
+    def _find_running_server_name() -> Optional[str]:
         if IS_WINDOWS:
             for binary_name in _LLAMA_SERVER_CANDIDATES:
                 result = subprocess.run(
@@ -250,11 +259,10 @@ def check_existing_llama_server_running() -> bool:
                     text=True,
                     check=False
                 )
+                logger.debug('Result from stdout is %s', result.stdout)
                 if binary_name in result.stdout:
-                    logger.warning('%s is already running. Terminating benchmark launch.',
-                                   binary_name)
-                    return True
-            return False
+                    return binary_name
+            return None
 
         result = subprocess.run(
             ['pgrep', '-f', '(^|/)llama-server($| )'],
@@ -263,12 +271,71 @@ def check_existing_llama_server_running() -> bool:
             check=False
         )
         if result.returncode == 0 and result.stdout.strip():
-            logger.warning('llama-server is already running. Terminating benchmark launch.')
-            return True
-        return False
+            return 'llama-server'
+        return None
+
+    try:
+        deadline = time.time() + max_wait_s
+        while True:
+            running_name = _find_running_server_name()
+            if not running_name:
+                return False
+
+            if time.time() >= deadline:
+                logger.warning('%s is already running. Terminating benchmark launch.',
+                               running_name)
+                return True
+
+            logger.debug('%s is running. Retrying process check in %.0f second(s).',
+                         running_name, retry_interval_s)
+            time.sleep(retry_interval_s)
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning('Failed to check existing llama-server process: %s', exc)
         return False
+
+
+def _kill_all_llama_server_processes() -> None:
+    """Force-stop any remaining llama-server processes."""
+    try:
+        logger.debug('Ensuring all llama-server processes are stopped.')
+        if IS_WINDOWS:
+            logger.debug('Using Windows taskkill cleanup for llama-server binaries: %s',
+                         ', '.join(_LLAMA_SERVER_CANDIDATES))
+            for binary_name in _LLAMA_SERVER_CANDIDATES:
+                logger.debug('Attempting forced taskkill for %s (with child processes).',
+                             binary_name)
+                forced_result = subprocess.run(
+                    ['taskkill', '/IM', binary_name, '/T', '/F'],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                logger.debug(
+                    'taskkill /T /F for %s completed with return code %d. stdout=%s stderr=%s',
+                    binary_name,
+                    forced_result.returncode,
+                    forced_result.stdout.strip() if forced_result.stdout else '',
+                    forced_result.stderr.strip() if forced_result.stderr else ''
+                )
+            logger.debug('Finished Windows llama-server process cleanup.')
+            return
+
+        logger.debug('Using Linux forced pkill cleanup for llama-server process pattern.')
+        forced_result = subprocess.run(
+            ['pkill', '-9', '-f', '(^|/)llama-server($| )'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        logger.debug(
+            'pkill -9 completed with return code %d. stdout=%s stderr=%s',
+            forced_result.returncode,
+            forced_result.stdout.strip() if forced_result.stdout else '',
+            forced_result.stderr.strip() if forced_result.stderr else ''
+        )
+        logger.debug('Finished Linux llama-server process cleanup.')
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning('Failed to kill remaining llama-server processes: %s', exc)
 
 
 # parse_model_spec is imported from mass_bench_common.
@@ -397,27 +464,6 @@ def _worker_server_and_llama_benchy(
         'reported_model': None
     }
 
-    pid_fd, supervisor_pid_file = tempfile.mkstemp(
-        prefix='llama_server_supervisor_',
-        suffix='.pid'
-    )
-    os.close(pid_fd)
-
-    command_prefix: Optional[List[str]] = None
-    if os.path.isfile(LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT):
-        command_prefix = [
-            sys.executable,
-            LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT,
-            '--pid-file',
-            supervisor_pid_file,
-            '--'
-        ]
-    else:
-        logger.warning(
-            'Restart supervisor script not found; server restart post-run command will be skipped: %s',
-            LLAMA_SERVER_RESTART_SUPERVISOR_SCRIPT
-        )
-
     server = LlamaServerProcess(
         install_dir,
         server_model,
@@ -425,8 +471,7 @@ def _worker_server_and_llama_benchy(
         find_server_binary_fn=_find_llama_server_binary,
         server_url_pattern=SERVER_URL_PATTERN,
         is_windows=IS_WINDOWS,
-        verbose=verbose,
-        command_prefix=command_prefix
+        verbose=verbose
     )
 
     try:
@@ -454,10 +499,18 @@ def _worker_server_and_llama_benchy(
         if benchy_model:
             cmd.extend(['--model', benchy_model])
 
-        if not _has_post_run_cmd_option(benchy_options) and command_prefix:
-            restart_post_run_cmd = _build_restart_post_run_cmd(supervisor_pid_file, server_url)
-            if restart_post_run_cmd:
-                cmd.extend(['--post-run-cmd', restart_post_run_cmd])
+        if not _has_post_run_cmd_option(benchy_options):
+            if server.process is not None and isinstance(server.process.args, list):
+                restart_post_run_cmd = _build_restart_post_run_cmd(
+                    server_pid=server.process.pid,
+                    server_url=server_url,
+                    server_cwd=install_dir,
+                    server_cmd=[str(arg) for arg in server.process.args]
+                )
+                if restart_post_run_cmd:
+                    cmd.extend(['--post-run-cmd', restart_post_run_cmd])
+            else:
+                logger.warning('Skipping auto restart post-run command; missing server process args.')
 
         cmd.extend(benchy_options)
 
@@ -490,11 +543,7 @@ def _worker_server_and_llama_benchy(
         logger.error("Failed to run llama-server + llama-benchy worker: %s", exc)
     finally:
         server.stop()
-        try:
-            if os.path.isfile(supervisor_pid_file):
-                os.remove(supervisor_pid_file)
-        except OSError:
-            pass
+        _kill_all_llama_server_processes()
 
     result_queue.put(result)
 
@@ -1102,7 +1151,15 @@ def main():
     parser = _create_argument_parser()
     args = parser.parse_args(preprocessed_args)
 
-    setup_logging(args.verbose)
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
+        force=True
+    )
+
+    if not clear_output_leaf_directory(args.output_dir):
+        sys.exit(1)
 
     # Save the initial power mode so we can restore it when done.
     initial_power_mode = get_power_mode()

@@ -139,6 +139,7 @@ try:
         POWER_MODE_MAP,
         iter_power_modes as _iter_power_modes,
         query_server_model as _query_server_model,
+        clear_output_leaf_directory,
         parse_model_spec,
         setup_logging,
         check_python_version,
@@ -1037,6 +1038,9 @@ def main():
     args = parser.parse_args(preprocessed_args)
 
     setup_logging(args.verbose)
+
+    if not clear_output_leaf_directory(args.output_dir):
+        sys.exit(1)
 
     initial_power_mode = get_power_mode()
     power_modes_requested = getattr(args, 'power_mode', None)
