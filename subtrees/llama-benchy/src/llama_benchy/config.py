@@ -6,7 +6,7 @@ import os
 import re
 import requests
 import sys
-from ._version import __version__
+from . import __version__
 
 
 class BenchmarkConfig(BaseModel):

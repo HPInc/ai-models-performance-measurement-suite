@@ -101,6 +101,12 @@ if lib_dir not in sys.path:
 LLAMA_SERVER_RESTART_CMD_SCRIPT = os.path.join(
     lib_dir, 'restart_llama_server.py'
 )
+LLAMA_BENCHY_MAIN_SCRIPT = os.path.join(
+    script_dir, 'subtrees', 'llama-benchy', 'src', 'llama_benchy', '__main__.py'
+)
+LLAMA_BENCHY_SRC_DIR = os.path.join(
+    script_dir, 'subtrees', 'llama-benchy', 'src'
+)
 
 # Import platform-specific helpers for command execution, directory changes, and
 # platform detection. Keep failures explicit for easier troubleshooting.
@@ -494,7 +500,7 @@ def _worker_server_and_llama_benchy(
             result_queue.put(result)
             return
 
-        cmd = ['llama-benchy', '--base-url', server_url, '--format', 'json',
+        cmd = [sys.executable, '-m', 'llama_benchy', '--base-url', server_url, '--format', 'json',
                '--save-result', temp_output_path]
         if benchy_model:
             cmd.extend(['--model', benchy_model])
@@ -516,11 +522,19 @@ def _worker_server_and_llama_benchy(
 
         logger.info("Running llama-benchy command: %s", ' '.join(cmd))
 
+        benchy_env = os.environ.copy()
+        existing_pythonpath = benchy_env.get('PYTHONPATH')
+        if existing_pythonpath:
+            benchy_env['PYTHONPATH'] = LLAMA_BENCHY_SRC_DIR + os.pathsep + existing_pythonpath
+        else:
+            benchy_env['PYTHONPATH'] = LLAMA_BENCHY_SRC_DIR
+
         proc_result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            check=False
+            check=False,
+            env=benchy_env
         )
 
         result['stdout'] = proc_result.stdout

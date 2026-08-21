@@ -5,4 +5,7 @@ This package provides a benchmarking tool for OpenAI-compatible LLM endpoints,
 generating statistics similar to `llama-bench`.
 """
 
-from ._version import __version__
+try:
+    from ._version import __version__
+except ImportError:  # pragma: no cover
+    __version__ = "0+local"

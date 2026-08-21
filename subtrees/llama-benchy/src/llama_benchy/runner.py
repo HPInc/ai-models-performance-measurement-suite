@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import List
 import aiohttp
 
-from ._version import __version__
+from . import __version__
 from .config import BenchmarkConfig
 from .client import CONTEXT_LOAD_USER_MESSAGE, LLMClient
 from .prompts import PromptGenerator
