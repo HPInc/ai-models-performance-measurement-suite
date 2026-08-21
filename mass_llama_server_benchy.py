@@ -145,6 +145,7 @@ try:
         query_server_model as _query_server_model,
         clear_output_leaf_directory,
         parse_model_spec,
+        setup_logging,
         check_python_version,
     )
 except ImportError:
@@ -1151,15 +1152,7 @@ def main():
     parser = _create_argument_parser()
     args = parser.parse_args(preprocessed_args)
 
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(levelname)s:%(message)s - (%(funcName)s in %(filename)s:%(lineno)d)",
-        force=True
-    )
-
-    if not clear_output_leaf_directory(args.output_dir):
-        sys.exit(1)
+    setup_logging(args.verbose)
 
     # Save the initial power mode so we can restore it when done.
     initial_power_mode = get_power_mode()
