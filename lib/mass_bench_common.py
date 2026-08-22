@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json as _json
 import logging
-import platform
 import sys
 import urllib.request
 

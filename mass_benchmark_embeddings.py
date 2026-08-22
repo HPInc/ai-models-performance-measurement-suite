@@ -59,12 +59,10 @@ import logging
 import os
 import platform
 import re
-import signal
 import socket
 import subprocess
 import sys
 import textwrap
-import time
 
 from typing import List, Optional
 
@@ -121,7 +119,7 @@ except ImportError:
     raise RuntimeError("Cannot find dashed_options module.") from None
 
 try:
-    from power_config import get_power_profile, get_power_mode, set_power_mode
+    from power_config import get_power_mode, set_power_mode
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Missing power_config.py library file.") from exc
         

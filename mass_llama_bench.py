@@ -123,7 +123,7 @@ except ImportError:
     raise RuntimeError("Cannot find resource_monitor_helpers module.") from None
 
 try:
-    from power_config import get_power_profile, get_power_mode, set_power_mode
+    from power_config import get_power_mode, set_power_mode
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Missing power_config.py library file.") from exc
 

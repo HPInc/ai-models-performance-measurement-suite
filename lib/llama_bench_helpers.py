@@ -41,10 +41,6 @@ from platform_support import (
     get_nonconflicting_output_path,
     extract_variant_number_from_path
 )
-from dashed_options import (
-    find_dashed_options,
-    convert_options_dict_to_options_list
-)
 from convenience_metrics import calculate_convenience_metrics
 
 logger = logging.getLogger(__name__)
@@ -552,7 +548,8 @@ def run_benchmark_and_write(config: BenchmarkRunConfig) -> List[str]:
 # Re-export combine_options from dashed_options for backward compatibility.
 # combine_options was originally defined here but has been moved to dashed_options
 # to be shared across multiple scripts.
-from dashed_options import combine_options  # noqa: E402  # pylint: disable=wrong-import-position
+import dashed_options as _dashed_options  # pylint: disable=wrong-import-position
+combine_options = _dashed_options.combine_options
 
 
 def run_warmup(model: str, bench_install: str) -> None:

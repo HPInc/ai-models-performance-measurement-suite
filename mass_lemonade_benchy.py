@@ -113,9 +113,14 @@ except ImportError:
     raise RuntimeError("Cannot find dashed_options module.") from None
 
 try:
-    from power_config import get_power_profile, get_power_mode, set_power_mode
+    from power_config import get_power_mode, set_power_mode
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Missing power_config.py library file.") from exc
+
+try:
+    from benchmark_environment import reset_benchmark_environment
+except ImportError:
+    raise RuntimeError("Cannot find benchmark_environment module.") from None
 
 # Import shared benchmark utilities to avoid code duplication across mass_* scripts.
 try:

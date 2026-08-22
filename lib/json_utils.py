@@ -23,12 +23,6 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Import power configuration utilities for setting power mode.
-try:
-    from power_config import get_power_mode
-except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("Missing power_config.py library file.") from exc
-
 def read_json_files_from_directory(directory: str) -> List[Dict[str, Any]]:
     """
     Read all JSON files from the specified directory.

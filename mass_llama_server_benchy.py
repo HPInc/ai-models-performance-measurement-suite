@@ -131,7 +131,7 @@ except ImportError:
 
 # Import power configuration utilities for setting power mode.
 try:
-    from power_config import get_power_profile, get_power_mode, set_power_mode
+    from power_config import get_power_mode, set_power_mode
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Missing power_config.py library file.") from exc
 
@@ -616,7 +616,6 @@ def run_llama_benchy_with_monitoring(
     """
     # Lazy import ResourceMonitor to avoid circular dependency
     # pylint: disable=import-outside-toplevel
-    import tempfile
     from resource_monitor import ResourceMonitor
 
     # Generate descriptive output filename

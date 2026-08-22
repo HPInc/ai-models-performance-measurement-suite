@@ -15,14 +15,12 @@ This module centralizes a few cross-platform helpers:
 All functions are intentionally small and dependency-light to be reusable
 across tooling and scripts.
 """
-import glob
 import os
-import platform
 import re
 import subprocess
 
 from contextlib import contextmanager
-from typing import List, Tuple, Union
+from typing import List, Tuple
 
 import logging
 logger = logging.getLogger(__name__)
