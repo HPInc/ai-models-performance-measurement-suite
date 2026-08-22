@@ -57,7 +57,6 @@ import os
 import platform
 import re
 import shlex
-import signal
 import socket
 import subprocess
 import sys
@@ -98,15 +97,16 @@ lib_dir = os.path.join(script_dir, 'lib')
 if lib_dir not in sys.path:
     sys.path.insert(0, lib_dir)
 
-LLAMA_SERVER_RESTART_CMD_SCRIPT = os.path.join(
-    lib_dir, 'restart_llama_server.py'
-)
-LLAMA_BENCHY_MAIN_SCRIPT = os.path.join(
-    script_dir, 'subtrees', 'llama-benchy', 'src', 'llama_benchy', '__main__.py'
-)
 LLAMA_BENCHY_SRC_DIR = os.path.join(
     script_dir, 'subtrees', 'llama-benchy', 'src'
 )
+LLAMA_SERVER_PRE_RUN_START_SCRIPT = os.path.join(
+    lib_dir, 'start_llama_server_with_pid_file.py'
+)
+LLAMA_SERVER_POST_RUN_STOP_SCRIPT = os.path.join(
+    lib_dir, 'stop_llama_server_from_pid_file.py'
+)
+_ACTIVE_SERVER_PID_FILES: set[str] = set()
 
 # Import platform-specific helpers for command execution, directory changes, and
 # platform detection. Keep failures explicit for easier troubleshooting.
@@ -148,7 +148,6 @@ try:
         POWER_MODE_MAP,
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
-        query_server_model as _query_server_model,
         parse_model_spec,
         setup_logging,
         check_python_version,
@@ -156,17 +155,11 @@ try:
 except ImportError:
     raise RuntimeError("Cannot find mass_bench_common module.") from None
 
-try:
-    from llama_server_process import LlamaServerProcess
-except ImportError:
-    raise RuntimeError("Cannot find llama_server_process module.") from None
-
 # Lazy import ResourceMonitor to avoid circular dependency.
 # Import happens inside functions that need it.
 
 # Constants
 DEFAULT_SERVER_STARTUP_TIMEOUT = 300  # seconds
-SERVER_URL_PATTERN = re.compile(r'http://[^\s]+:\d+')
 
 
 def _find_llama_server_binary(install_dir: str) -> Optional[str]:
@@ -178,40 +171,104 @@ def _find_llama_server_binary(install_dir: str) -> Optional[str]:
     return None
 
 
-def _has_post_run_cmd_option(options: List[str]) -> bool:
-    """Return True when llama-benchy options already include --post-run-cmd."""
-    return any(
-        opt == '--post-run-cmd' or opt.startswith('--post-run-cmd=')
-        for opt in options
-    )
-
-
-def _build_restart_post_run_cmd(
-    server_pid: int,
-    server_url: str,
-    server_cwd: str,
-    server_cmd: List[str]
-) -> Optional[str]:
-    """Build a cross-platform --post-run-cmd value that restarts llama-server."""
-    if not os.path.isfile(LLAMA_SERVER_RESTART_CMD_SCRIPT):
-        logger.warning('Restart command script not found: %s', LLAMA_SERVER_RESTART_CMD_SCRIPT)
-        return None
-
-    command_parts = [
-        sys.executable,
-        LLAMA_SERVER_RESTART_CMD_SCRIPT,
-        '--server-pid',
-        str(server_pid),
-        '--server-url',
-        server_url,
-        '--server-cwd',
-        server_cwd,
-        '--server-cmd-json',
-        json.dumps(server_cmd),
-    ]
+def _format_shell_command(parts: List[str]) -> str:
     if IS_WINDOWS:
-        return subprocess.list2cmdline(command_parts)
-    return shlex.join(command_parts)
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
+def _extract_server_host_port(server_options: List[str]) -> tuple[str, int]:
+    host = '127.0.0.1'
+    port = 8080
+
+    i = 0
+    while i < len(server_options):
+        option = server_options[i]
+        if option.startswith('--host='):
+            host = option.split('=', 1)[1]
+            i += 1
+            continue
+        if option == '--host' and i + 1 < len(server_options):
+            host = server_options[i + 1]
+            i += 2
+            continue
+
+        if option.startswith('--port='):
+            try:
+                port = int(option.split('=', 1)[1])
+            except ValueError:
+                logger.warning('Invalid --port value: %s', option)
+            i += 1
+            continue
+        if option == '--port' and i + 1 < len(server_options):
+            try:
+                port = int(server_options[i + 1])
+            except ValueError:
+                logger.warning('Invalid --port value: %s', server_options[i + 1])
+            i += 2
+            continue
+
+        i += 1
+
+    if host in ('0.0.0.0', '::'):
+        host = '127.0.0.1'
+    return host, port
+
+
+def _server_base_url_from_options(server_options: List[str]) -> str:
+    host, port = _extract_server_host_port(server_options)
+    return f'http://{host}:{port}'
+
+
+def _build_pre_run_start_cmd(
+    install_dir: str,
+    server_model: Optional[str],
+    server_options: List[str],
+    server_url: str,
+    pid_file_path: str,
+) -> str:
+    normalized_install_dir = os.path.abspath(install_dir)
+    normalized_server_model = (
+        os.path.abspath(server_model) if server_model else ''
+    )
+    return _format_shell_command([
+        sys.executable,
+        LLAMA_SERVER_PRE_RUN_START_SCRIPT,
+        '--install-dir', normalized_install_dir,
+        '--server-model', normalized_server_model,
+        '--server-options-json', json.dumps(server_options),
+        '--pid-file', pid_file_path,
+        '--server-url', server_url,
+        '--timeout', str(DEFAULT_SERVER_STARTUP_TIMEOUT),
+    ])
+
+
+def _build_post_run_stop_cmd(pid_file_path: str) -> str:
+    return _format_shell_command([
+        sys.executable,
+        LLAMA_SERVER_POST_RUN_STOP_SCRIPT,
+        '--pid-file', pid_file_path,
+    ])
+
+
+def _stop_server_from_pid_file(pid_file_path: str) -> None:
+    if not os.path.isfile(pid_file_path):
+        return
+
+    stop_cmd = [
+        sys.executable,
+        LLAMA_SERVER_POST_RUN_STOP_SCRIPT,
+        '--pid-file', pid_file_path,
+    ]
+    result = subprocess.run(stop_cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        logger.warning(
+            'Failed to stop llama-server from pid file %s. rc=%d stdout=%s stderr=%s',
+            pid_file_path,
+            result.returncode,
+            result.stdout.strip() if result.stdout else '',
+            result.stderr.strip() if result.stderr else '',
+        )
 
 
 def find_llama_server_installs(llama_dirs: Optional[List[str]]) -> List[str]:
@@ -298,50 +355,6 @@ def check_existing_llama_server_running() -> bool:
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning('Failed to check existing llama-server process: %s', exc)
         return False
-
-
-def _kill_all_llama_server_processes() -> None:
-    """Force-stop any remaining llama-server processes."""
-    try:
-        logger.debug('Ensuring all llama-server processes are stopped.')
-        if IS_WINDOWS:
-            logger.debug('Using Windows taskkill cleanup for llama-server binaries: %s',
-                         ', '.join(_LLAMA_SERVER_CANDIDATES))
-            for binary_name in _LLAMA_SERVER_CANDIDATES:
-                logger.debug('Attempting forced taskkill for %s (with child processes).',
-                             binary_name)
-                forced_result = subprocess.run(
-                    ['taskkill', '/IM', binary_name, '/T', '/F'],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                logger.debug(
-                    'taskkill /T /F for %s completed with return code %d. stdout=%s stderr=%s',
-                    binary_name,
-                    forced_result.returncode,
-                    forced_result.stdout.strip() if forced_result.stdout else '',
-                    forced_result.stderr.strip() if forced_result.stderr else ''
-                )
-            logger.debug('Finished Windows llama-server process cleanup.')
-            return
-
-        logger.debug('Using Linux forced pkill cleanup for llama-server process pattern.')
-        forced_result = subprocess.run(
-            ['pkill', '-9', '-f', '(^|/)llama-server($| )'],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        logger.debug(
-            'pkill -9 completed with return code %d. stdout=%s stderr=%s',
-            forced_result.returncode,
-            forced_result.stdout.strip() if forced_result.stdout else '',
-            forced_result.stderr.strip() if forced_result.stderr else ''
-        )
-        logger.debug('Finished Linux llama-server process cleanup.')
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning('Failed to kill remaining llama-server processes: %s', exc)
 
 
 # parse_model_spec is imported from mass_bench_common.
@@ -449,10 +462,11 @@ def _worker_server_and_llama_benchy(
     benchy_model: Optional[str],
     benchy_options: List[str],
     temp_output_path: str,
+    server_pid_file_path: str,
     verbose: bool,
     result_queue,
 ) -> None:
-    """Start llama-server, run llama-benchy, stop server, and publish result."""
+    """Run llama-benchy and manage llama-server via pre/post commands."""
     import logging as _logging  # pylint: disable=import-outside-toplevel
     log_level = _logging.DEBUG if verbose else _logging.INFO
     _logging.basicConfig(
@@ -470,55 +484,47 @@ def _worker_server_and_llama_benchy(
         'reported_model': None
     }
 
-    server = LlamaServerProcess(
-        install_dir,
-        server_model,
-        all_server_options,
-        find_server_binary_fn=_find_llama_server_binary,
-        server_url_pattern=SERVER_URL_PATTERN,
-        is_windows=IS_WINDOWS,
-        verbose=verbose
-    )
-
     try:
-        server_url = server.start()
-        if not server_url:
-            logger.error("Failed to start llama-server.")
+        normalized_install_dir = os.path.abspath(install_dir)
+        server_binary = _find_llama_server_binary(normalized_install_dir)
+        if not server_binary:
+            logger.error('llama-server binary not found in %s', normalized_install_dir)
             result_queue.put(result)
             return
 
-        logger.debug("Worker received llama-server URL: %s", server_url)
+        if server_model:
+            normalized_server_model = os.path.abspath(server_model)
+            if not os.path.isfile(normalized_server_model):
+                logger.error('Server model file not found: %s', normalized_server_model)
+                result_queue.put(result)
+                return
+        else:
+            normalized_server_model = None
 
-        reported_model = _query_server_model(server_url)
-        result['reported_model'] = reported_model
-
-        if not server_model and not reported_model:
-            logger.error(
-                "No model loaded on llama-server. When -m is omitted, "
-                "the model must be specified via -c, -s, or -j options."
-            )
-            result_queue.put(result)
-            return
+        server_url = _server_base_url_from_options(all_server_options)
+        result['reported_model'] = benchy_model
 
         cmd = [sys.executable, '-m', 'llama_benchy', '--base-url', server_url, '--format', 'json',
                '--save-result', temp_output_path]
         if benchy_model:
             cmd.extend(['--model', benchy_model])
 
-        if not _has_post_run_cmd_option(benchy_options):
-            if server.process is not None and isinstance(server.process.args, list):
-                restart_post_run_cmd = _build_restart_post_run_cmd(
-                    server_pid=server.process.pid,
-                    server_url=server_url,
-                    server_cwd=install_dir,
-                    server_cmd=[str(arg) for arg in server.process.args]
-                )
-                if restart_post_run_cmd:
-                    cmd.extend(['--post-run-cmd', restart_post_run_cmd])
-            else:
-                logger.warning('Skipping auto restart post-run command; missing server process args.')
+        cmd.append('--no-warmup')
 
         cmd.extend(benchy_options)
+
+        cmd.extend([
+            '--pre-run-cmd',
+            _build_pre_run_start_cmd(
+                install_dir=normalized_install_dir,
+                server_model=normalized_server_model,
+                server_options=all_server_options,
+                server_url=server_url,
+                pid_file_path=server_pid_file_path,
+            ),
+            '--post-run-cmd',
+            _build_post_run_stop_cmd(server_pid_file_path),
+        ])
 
         logger.info("Running llama-benchy command: %s", ' '.join(cmd))
 
@@ -555,9 +561,6 @@ def _worker_server_and_llama_benchy(
         logger.error("llama-benchy not found. Ensure it is installed and in PATH.")
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("Failed to run llama-server + llama-benchy worker: %s", exc)
-    finally:
-        server.stop()
-        _kill_all_llama_server_processes()
 
     result_queue.put(result)
 
@@ -626,10 +629,14 @@ def run_llama_benchy_with_monitoring(
     output_path = os.path.join(output_dir, output_filename)
     output_path = get_nonconflicting_output_path(output_path)
 
-    # Create a temporary file for llama-benchy to write its JSON output
-    # We use delete=False so we can read the file after the subprocess completes
+    # Create temporary files for llama-benchy output and llama-server PID tracking.
     temp_fd, temp_output_path = tempfile.mkstemp(suffix='.json', prefix='llama_benchy_')
     os.close(temp_fd)  # Close the file descriptor; llama-benchy will write to it
+    pid_fd, server_pid_file_path = tempfile.mkstemp(suffix='.pid', prefix='llama_server_')
+    os.close(pid_fd)
+    if os.path.isfile(server_pid_file_path):
+        os.remove(server_pid_file_path)
+    _ACTIVE_SERVER_PID_FILES.add(server_pid_file_path)
 
     try:
         logger.info("Running llama-server + llama-benchy with monitoring")
@@ -644,6 +651,7 @@ def run_llama_benchy_with_monitoring(
                 benchy_model,
                 benchy_options,
                 temp_output_path,
+                server_pid_file_path,
                 verbose
             ),
             sample_interval_s=sample_interval,
@@ -716,6 +724,9 @@ def run_llama_benchy_with_monitoring(
             except OSError:
                 pass  # Ignore cleanup errors
 
+        _stop_server_from_pid_file(server_pid_file_path)
+        _ACTIVE_SERVER_PID_FILES.discard(server_pid_file_path)
+
 
 def _run_benchmarks_for_server_config(
     install_dir: str,
@@ -773,9 +784,6 @@ def _run_benchmarks_for_server_config(
 
         # Iterate over all llama-benchy option sets and run with per-benchmark server lifecycle.
         for extra_options in iter_option_sets(extra_benchy_option_sets):
-            if check_existing_llama_server_running():
-                return written_json_files
-
             combined_benchy_options = combine_options(fixed_benchy_options, extra_options) or []
 
             output_file = run_llama_benchy_with_monitoring(
@@ -1167,6 +1175,10 @@ def main():
 
     setup_logging(args.verbose)
 
+    if check_existing_llama_server_running():
+        logger.error("Detected an existing llama-server process. Exiting before benchmark run.")
+        sys.exit(1)
+
     # Save the initial power mode so we can restore it when done.
     initial_power_mode = get_power_mode()
     power_modes_requested = getattr(args, 'power_mode', None)
@@ -1176,7 +1188,10 @@ def main():
         # Run the benchmarks
         success = benchmark_models(args)
     except KeyboardInterrupt:
-        logger.info("Interrupted by user. Stopping llama-server and exiting.")
+        logger.info("Interrupted by user. Stopping llama-server from pid files and exiting.")
+        for pid_file_path in list(_ACTIVE_SERVER_PID_FILES):
+            _stop_server_from_pid_file(pid_file_path)
+        success = False
     finally:
         # Restore the initial power mode if we changed it during benchmarking
         if power_modes_requested and initial_power_mode:

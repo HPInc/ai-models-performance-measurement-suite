@@ -51,6 +51,24 @@ class BenchmarkRunner:
         except Exception:
             pass
 
+    def _run_hook(self, command: str, name: str) -> None:
+        try:
+            hook_result = subprocess.run(
+                command,
+                shell=True,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if hook_result.stdout:
+                print(hook_result.stdout.strip())
+            if hook_result.stderr:
+                print(hook_result.stderr.strip())
+        except subprocess.CalledProcessError as exc:
+            details = exc.stderr.strip() if exc.stderr else str(exc)
+            print(f"{name} command failed: {details}")
+            raise BenchmarkFailure() from exc
+
     async def run_suite(self):
         # Initialize session
         timeout = aiohttp.ClientTimeout(total=3600)
@@ -67,31 +85,38 @@ class BenchmarkRunner:
 
                 tokenizer = self.prompt_gen.corpus.get_tokenizer()
 
-                if should_warmup:
-                    self.delta_user, self.delta_context = await self.client.warmup(session, tokenizer)
+                if self.config.pre_run_cmd:
+                    self._run_hook(self.config.pre_run_cmd, "Pre-run")
 
-                # Coherence test after warmup (by default, unless skipped)
-                if not self.config.skip_coherence:
-                    if not await self.client.run_coherence_test(session):
-                        print("\nBenchmark failed due to coherence test failure.")
-                        raise SystemExit(1)
-                else:
-                    print("\nSkipping coherence test (--skip-coherence specified)")
+                try:
+                    if should_warmup:
+                        self.delta_user, self.delta_context = await self.client.warmup(session, tokenizer)
 
-                # Measure latency
-                warmup_runs = 0 if self.config.no_warmup else self.config.warmup_runs
-                latency = await self.client.measure_latency(
-                    session,
-                    self.config.latency_mode,
-                    warmup_runs=warmup_runs,
-                )
-                if self.progress is not None:
-                    try:
-                        self.progress.latency_measured(
-                            latency_s=latency, mode=self.config.latency_mode
-                        )
-                    except Exception:
-                        pass
+                    # Coherence test after warmup (by default, unless skipped)
+                    if not self.config.skip_coherence:
+                        if not await self.client.run_coherence_test(session):
+                            print("\nBenchmark failed due to coherence test failure.")
+                            raise SystemExit(1)
+                    else:
+                        print("\nSkipping coherence test (--skip-coherence specified)")
+
+                    # Measure latency
+                    warmup_runs = 0 if self.config.no_warmup else self.config.warmup_runs
+                    latency = await self.client.measure_latency(
+                        session,
+                        self.config.latency_mode,
+                        warmup_runs=warmup_runs,
+                    )
+                    if self.progress is not None:
+                        try:
+                            self.progress.latency_measured(
+                                latency_s=latency, mode=self.config.latency_mode
+                            )
+                        except Exception:
+                            pass
+                finally:
+                    if self.config.post_run_cmd:
+                        self._run_hook(self.config.post_run_cmd, "Post-run")
 
                 # Main Loop
                 for depth in self.config.depths:
@@ -117,10 +142,7 @@ class BenchmarkRunner:
 
                                     # Pre Run Command
                                     if self.config.pre_run_cmd:
-                                        try:
-                                            subprocess.run(self.config.pre_run_cmd, shell=True, check=True)
-                                        except subprocess.CalledProcessError as e:
-                                            print(f"Pre-run command failed: {e}")
+                                        self._run_hook(self.config.pre_run_cmd, "Pre-run")
 
                                     # Adapt prompt tokens
                                     current_pp = pp
@@ -231,10 +253,7 @@ class BenchmarkRunner:
 
                                     # Post Run Command
                                     if self.config.post_run_cmd:
-                                        try:
-                                            subprocess.run(self.config.post_run_cmd, shell=True, check=True)
-                                        except subprocess.CalledProcessError as e:
-                                            print(f"Post-run command failed: {e}")
+                                        self._run_hook(self.config.post_run_cmd, "Post-run")
 
                                 # Aggregate and Record
                                 if self.config.enable_prefix_caching and depth > 0:
