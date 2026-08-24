@@ -10,6 +10,7 @@ import platform
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -117,6 +118,19 @@ def _run_warmup_request(base_url: str, prompt: str, max_tokens: int) -> None:
         _ = response.read()
 
 
+def _tail_text_file(path: str, max_chars: int = 4000) -> str:
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as file_obj:
+            content = file_obj.read()
+        if len(content) <= max_chars:
+            return content
+        return content[-max_chars:]
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -133,21 +147,38 @@ def main() -> int:
     server_cmd.extend(server_options)
 
     process = None
+    server_stderr_path = ""
+    server_stderr_file = None
     try:
+        pid_abs_path = os.path.abspath(args.pid_file)
+        pid_dir = os.path.dirname(pid_abs_path)
+        if pid_dir:
+            os.makedirs(pid_dir, exist_ok=True)
+
+        server_stderr_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+            prefix="llama-server-stderr-",
+            suffix=".log",
+            dir=pid_dir if pid_dir else None,
+        )
+        server_stderr_path = server_stderr_file.name
+
         process = subprocess.Popen(
             server_cmd,
             **build_process_group_popen_kwargs(
                 is_windows=IS_WINDOWS,
                 cwd=args.install_dir,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=server_stderr_file,
                 text=False,
             ),
         )
 
-        pid_dir = os.path.dirname(os.path.abspath(args.pid_file))
-        if pid_dir:
-            os.makedirs(pid_dir, exist_ok=True)
+        server_stderr_file.close()
+        server_stderr_file = None
+
         with open(args.pid_file, "w", encoding="utf-8") as pid_file:
             pid_file.write(str(process.pid))
 
@@ -159,6 +190,22 @@ def main() -> int:
         )
         return 0
     except Exception as exc:  # pylint: disable=broad-except
+        if server_stderr_file is not None:
+            try:
+                server_stderr_file.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+        stderr_tail = _tail_text_file(server_stderr_path)
+        if stderr_tail:
+            print(
+                f"llama-server stderr log: {server_stderr_path}\n"
+                f"--- stderr tail ---\n{stderr_tail}",
+                file=sys.stderr,
+            )
+        elif server_stderr_path:
+            print(f"llama-server stderr log: {server_stderr_path}", file=sys.stderr)
+
         if process is not None:
             try:
                 stop_process_by_pid(process.pid, is_windows=IS_WINDOWS)
