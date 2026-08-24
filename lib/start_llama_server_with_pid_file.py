@@ -156,8 +156,7 @@ def main() -> int:
             os.makedirs(pid_dir, exist_ok=True)
 
         server_stderr_file = tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
+            mode="wb",
             delete=False,
             prefix="llama-server-stderr-",
             suffix=".log",
@@ -170,8 +169,8 @@ def main() -> int:
             **build_process_group_popen_kwargs(
                 is_windows=IS_WINDOWS,
                 cwd=args.install_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=server_stderr_file,
+                stdout=server_stderr_file,
+                stderr=subprocess.STDOUT,
                 text=False,
             ),
         )
@@ -199,12 +198,12 @@ def main() -> int:
         stderr_tail = _tail_text_file(server_stderr_path)
         if stderr_tail:
             print(
-                f"llama-server stderr log: {server_stderr_path}\n"
-                f"--- stderr tail ---\n{stderr_tail}",
+                f"llama-server stdout/stderr log: {server_stderr_path}\n"
+                f"--- stdout/stderr tail ---\n{stderr_tail}",
                 file=sys.stderr,
             )
         elif server_stderr_path:
-            print(f"llama-server stderr log: {server_stderr_path}", file=sys.stderr)
+            print(f"llama-server stdout/stderr log: {server_stderr_path}", file=sys.stderr)
 
         if process is not None:
             try:
