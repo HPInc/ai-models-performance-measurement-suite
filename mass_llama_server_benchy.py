@@ -688,10 +688,11 @@ def run_llama_benchy_with_monitoring(
             conv_metrics['runs'] = f'Run #{run_number}'
         conv_metrics['variant'] = extract_variant_number_from_path(output_path)
 
-        # Use model reported while server was running.
+        # If no explicit server model was supplied, fall back to the model
+        # reported while the server was running.
         reported_model = worker_result.get('reported_model') if worker_result else None
-        if reported_model:
-            conv_metrics['model'] = reported_model
+        if reported_model and not server_model:
+            conv_metrics['model'] = os.path.basename(reported_model)
 
         # Build the combined JSON structure (same format as mass_llama_bench.py)
         combined_results = {
