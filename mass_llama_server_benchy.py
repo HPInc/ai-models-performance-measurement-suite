@@ -322,11 +322,6 @@ def _extract_llama_server_version_from_install_dir(install_dir: str) -> str:
     install_name = os.path.basename(install_dir.rstrip(os.sep))
     if not install_name:
         return ''
-
-    build_match = re.search(r'b\d+', install_name)
-    if build_match:
-        return build_match.group(0)
-
     return install_name
 
 
