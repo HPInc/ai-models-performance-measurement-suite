@@ -50,6 +50,18 @@ Includes a general-purpose CLI resource monitor (`resource_monitor.py`), llama.c
 * `plotly` — For generating interactive HTML plots
 * `llama-benchy` — CLI required for some benchmarking workflows.
 
+### Hugging Face Token for `llama-benchy` Chat Completions
+
+When benchmarking OpenAI-compatible `v1/chat/completions` endpoints with scripts that invoke `llama-benchy` (for example, `mass_llama_server_benchy.py`, `mass_lemonade_benchy.py`, and `mass_benchy.py`), set a Hugging Face token in the `HF_TOKEN` environment variable.
+1. Create or sign in to your Hugging Face account: `https://huggingface.co/`
+2. Go to **Settings** → **Access Tokens**: `https://huggingface.co/settings/tokens`
+3. Create a token with at least read-only access.
+4. Set the token in your shell before running benchmark scripts:
+
+   * Windows (PowerShell): `$env:HF_TOKEN = "<your_token_here>"`
+   * Windows (CMD): `set HF_TOKEN=<your_token_here>`
+   * Linux/macOS (bash): `export HF_TOKEN="<your_token_here>"`
+
 ## Installation
 
 ### Clone and enter the repository

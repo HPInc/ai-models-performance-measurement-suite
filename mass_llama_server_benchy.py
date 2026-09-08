@@ -319,14 +319,17 @@ def _build_output_filename(
 
 def _extract_llama_server_version_from_install_dir(install_dir: str) -> str:
     """Extract a llama-server version identifier from the install directory name."""
+
+	# Try to find a llama version string in the entire install directory path.
+    build_match = re.search(r'b\d{4,}', install_dir)
+    if build_match:
+        return build_match.group(0)
+	
+	# If we cannot find a llama version string, try to find the basename.
     install_name = os.path.basename(install_dir.rstrip(os.sep))
     if not install_name:
         return ''
-
-    build_match = re.search(r'b\d+', install_name)
-    if build_match:
-        return build_match.group(0)
-
+		
     return install_name
 
 
@@ -550,9 +553,10 @@ def run_llama_benchy_with_monitoring(
             conv_metrics['runs'] = f'Run #{run_number}'
         conv_metrics['variant'] = extract_variant_number_from_path(output_path)
 
-        # Use model reported while server was running.
+        # If no explicit server model was supplied, fall back to the model
+        # reported while server was running.
         reported_model = worker_result.get('reported_model') if worker_result else None
-        if reported_model:
+        if reported_model and not server_model:
             conv_metrics['model'] = reported_model
 
         # Build the combined JSON structure (same format as mass_llama_bench.py)
