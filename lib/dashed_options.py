@@ -6,8 +6,8 @@ Public API
 ----------
 - find_dashed_options(options_string) -> Dict[str, Tuple[str, Any]]
 - convert_options_dict_to_options_list(options_dict) -> List[str]
-- create_options_list(options_string) -> List[str]
-- iter_option_sets(option_sets) -> Iterator[Optional[List[str]]]
+- create_options_list(options_string, excluded_short_options=None) -> List[str]
+- iter_option_sets(option_sets, excluded_short_options=None) -> Iterator[Optional[List[str]]]
 - combine_options(constant_options, variable_options) -> Optional[List[str]]
 - parse_joint_options(joint_options) -> Iterator[Tuple[Optional[List[str]], Optional[List[str]]]]
 - preprocess_dash_value_args(argv, dash_value_options, quoted_value_options) -> List[str]
@@ -89,17 +89,23 @@ def convert_options_dict_to_options_list(options_dict: Dict[str, Tuple[str, any]
             options_list.append(value)
     return options_list
 
-def create_options_list(extra_options: str) -> List[str]:
+def create_options_list(
+    extra_options: str,
+    excluded_short_options: Optional[List[str]] = None
+) -> List[str]:
     """
     Parse a string of dashed options and return a flattened list of CLI tokens.
 
-    Parses the input string to extract dashed options, removes any -o or -m
-    options (reserved for output and model specification), and converts the
-    remaining options to a list format suitable for command-line use.
+    Parses the input string to extract dashed options, optionally removes
+    selected short options, and converts the remaining options to a list format
+    suitable for command-line use.
 
     Args:
         extra_options: A string containing space-separated dashed options
             (e.g., "-fa 0 --use_mmap 1").
+        excluded_short_options: Optional list of short option names (without
+            leading '-') to drop from the parsed result. Defaults to
+            ``['o', 'm']`` for backwards compatibility.
 
     Returns:
         A list of CLI tokens representing the parsed options and their values
@@ -112,22 +118,32 @@ def create_options_list(extra_options: str) -> List[str]:
         extra_options = extra_options.strip('"').strip("'")
         options_dict = find_dashed_options(extra_options)
         if options_dict:
-            bad_options = ['o', 'm']
+            if excluded_short_options is None:
+                excluded_short_options = ['o', 'm']
+            bad_options = excluded_short_options
             for bad_option in bad_options:
                 options_dict.pop(bad_option, None)
             options_list = convert_options_dict_to_options_list(options_dict)
 
     return options_list
 
-def iter_option_sets(extra_options: List[str]):
+def iter_option_sets(
+    extra_options: List[str],
+    excluded_short_options: Optional[List[str]] = None
+):
     """
     Yield a normalized stream of options lists:
     - If extra_options is provided, convert each to an options list.
     - Otherwise, yield a single None to indicate 'no extra options'.
+
+    Args:
+        extra_options: List of option strings.
+        excluded_short_options: Optional list of short option names (without
+            leading '-') to drop from each parsed option set.
     """
     if extra_options:
         for opt in extra_options:
-            yield create_options_list(opt)
+            yield create_options_list(opt, excluded_short_options=excluded_short_options)
     else:
         yield None
 
@@ -179,11 +195,17 @@ def parse_joint_options(joint_options: Optional[List[str]]):
     for joint_str in joint_options:
         if ',' in joint_str:
             server_part, benchy_part = joint_str.split(',', 1)
-            server_opts = create_options_list(server_part.strip()) if server_part.strip() else None
-            benchy_opts = create_options_list(benchy_part.strip()) if benchy_part.strip() else None
+            server_opts = create_options_list(
+                server_part.strip(), excluded_short_options=[]
+            ) if server_part.strip() else None
+            benchy_opts = create_options_list(
+                benchy_part.strip(), excluded_short_options=[]
+            ) if benchy_part.strip() else None
         else:
             server_opts = None
-            benchy_opts = create_options_list(joint_str.strip()) if joint_str.strip() else None
+            benchy_opts = create_options_list(
+                joint_str.strip(), excluded_short_options=[]
+            ) if joint_str.strip() else None
         yield (server_opts, benchy_opts)
 
 

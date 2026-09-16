@@ -200,8 +200,8 @@ def compute_differential_labels(datasets: List[DatasetInfo], truncate: bool = Tr
     cm_model_differs = len(set(ds.model for ds in datasets if ds.model)) > 1
     version_differs = len(set(ds.llama_version for ds in datasets if ds.llama_version)) > 1
     server_options_differs = len(set(ds.server_options for ds in datasets
-                                     if ds.server_options)) > 1
-    options_differs = len(set(ds.options for ds in datasets if ds.options)) > 1
+                                     if ds.server_options)) > 0
+    options_differs = len(set(ds.options for ds in datasets if ds.options)) > 0
     constant_server_options_differs = len(set(ds.constant_server_options for ds in datasets
                                              if ds.constant_server_options)) > 1
     fixed_options_differs = len(set(ds.fixed_options for ds in datasets

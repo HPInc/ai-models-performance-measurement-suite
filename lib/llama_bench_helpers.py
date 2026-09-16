@@ -46,6 +46,7 @@ from dashed_options import (
     convert_options_dict_to_options_list
 )
 from convenience_metrics import calculate_convenience_metrics
+from mass_bench_common import build_safe_output_filename
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,7 @@ def build_output_filename_base(prefix: str,
     Returns:
         The constructed base filename without any file extension.
     """
-    name = prefix
+    parts = [prefix]
 
     # Extract metadata from the first test result entry.
     if test_results and isinstance(test_results, list):
@@ -194,11 +195,11 @@ def build_output_filename_base(prefix: str,
                 build_str = str(first_result['build_number'])
                 if build_str.isdigit():
                     build_str = 'b' + build_str
-                name += '_' + build_str
+                parts.append(build_str)
             if 'model_filename' in first_result:
                 # Extract just the filename part, not the full path.
                 base_name = os.path.basename(first_result['model_filename'])
-                name += '_' + base_name
+                parts.append(base_name)
         else:
             logging.error('Expecting a dictionary in test_results')
     else:
@@ -207,9 +208,9 @@ def build_output_filename_base(prefix: str,
     # Append options (if any) to capture impactful flags (e.g., `-fa 0`).
     if options:
         for option in options:
-            name += '_' + option
+            parts.append(option)
 
-    return name
+    return build_safe_output_filename(parts, extension='', fallback_stem='llama-bench')
 
 
 def write_json_file(outdir: str,

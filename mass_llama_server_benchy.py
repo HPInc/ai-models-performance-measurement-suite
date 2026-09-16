@@ -135,6 +135,7 @@ try:
         DEFAULT_SAMPLE_INTERVAL,
         BenchmarkArgumentParser,
         POWER_MODE_MAP,
+        build_safe_output_filename as _build_safe_output_filename,
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
@@ -312,9 +313,7 @@ def _build_output_filename(
     if total_runs > 1:
         parts.append(f'Run_{run_number}')
 
-    # Join parts with underscore
-    filename = '_'.join(parts) + '.json'
-    return filename
+    return _build_safe_output_filename(parts, fallback_stem='llama-server')
 
 
 def _extract_llama_server_version_from_install_dir(install_dir: str) -> str:
@@ -376,6 +375,16 @@ def _worker_server_and_llama_benchy(
     )
 
     try:
+        server_exe = _find_llama_server_binary(install_dir)
+        if server_exe:
+            server_cmd = [server_exe]
+            if server_model:
+                server_cmd.extend(['-m', server_model])
+            server_cmd.extend(all_server_options)
+            if verbose:
+                server_cmd.append('-v')
+            logger.info("Running llama-server command: %s", ' '.join(server_cmd))
+
         server_url = server.start()
         if not server_url:
             logger.error("Failed to start llama-server.")
@@ -645,7 +654,9 @@ def _run_benchmarks_for_server_config(
             reset_benchmark_environment()
 
         # Iterate over all llama-benchy option sets and run with per-benchmark server lifecycle.
-        for extra_options in iter_option_sets(extra_benchy_option_sets):
+        for extra_options in iter_option_sets(
+                extra_benchy_option_sets,
+                excluded_short_options=[]):
             if check_existing_llama_server_running():
                 return written_json_files
 
@@ -714,13 +725,19 @@ def benchmark_models(parser_args) -> bool:
     # Parse constant server options
     constant_server_options = []
     if parser_args.constant_server_parms:
-        constant_server_options = create_options_list(parser_args.constant_server_parms)
+        constant_server_options = create_options_list(
+            parser_args.constant_server_parms,
+            excluded_short_options=[]
+        )
         logger.debug('Constant server options: %s', constant_server_options)
 
     # Parse fixed benchy options
     fixed_benchy_options = []
     if parser_args.fixed_options:
-        fixed_benchy_options = create_options_list(parser_args.fixed_options)
+        fixed_benchy_options = create_options_list(
+            parser_args.fixed_options,
+            excluded_short_options=[]
+        )
         logger.debug('Fixed benchy options: %s', fixed_benchy_options)
 
     # Find llama-server installations
@@ -767,28 +784,40 @@ def benchmark_models(parser_args) -> bool:
                     logger.info("No explicit model; expecting model from "
                                 "server options (-c, -s, or -j).")
 
-                # Iterate over variable server parameters
-                for server_opts in iter_option_sets(parser_args.server_parms):
-                    logger.debug("Server variable options: %s", server_opts)
+                has_joint_options = bool(parser_args.joint_options)
+                run_standard_option_flow = (
+                    bool(parser_args.server_parms)
+                    or bool(parser_args.extra_options)
+                    or not has_joint_options
+                )
 
-                    files_from_config = _run_benchmarks_for_server_config(
-                        install_dir=install_dir,
-                        server_model=server_model,
-                        benchy_model=benchy_model,
-                        constant_server_options=constant_server_options,
-                        variable_server_options=server_opts,
-                        fixed_benchy_options=fixed_benchy_options,
-                        extra_benchy_option_sets=parser_args.extra_options,
-                        output_dir=parser_args.output_dir,
-                        hostname=hostname,
-                        sample_interval=parser_args.sample_interval,
-                        verbose=parser_args.verbose,
-                        power_mode_label=power_mode_label,
-                        description=getattr(parser_args, 'description', None),
-                        runs=parser_args.runs,
-                        reset_environment=parser_args.reset_environment
-                    )
-                    written_json_files.extend(files_from_config)
+                # Iterate over non-joint options.
+                # When only -j is provided, skip this flow to avoid an
+                # unintended baseline run with empty server/benchy options.
+                if run_standard_option_flow:
+                    for server_opts in iter_option_sets(
+                            parser_args.server_parms,
+                            excluded_short_options=[]):
+                        logger.debug("Server variable options: %s", server_opts)
+
+                        files_from_config = _run_benchmarks_for_server_config(
+                            install_dir=install_dir,
+                            server_model=server_model,
+                            benchy_model=benchy_model,
+                            constant_server_options=constant_server_options,
+                            variable_server_options=server_opts,
+                            fixed_benchy_options=fixed_benchy_options,
+                            extra_benchy_option_sets=parser_args.extra_options,
+                            output_dir=parser_args.output_dir,
+                            hostname=hostname,
+                            sample_interval=parser_args.sample_interval,
+                            verbose=parser_args.verbose,
+                            power_mode_label=power_mode_label,
+                            description=getattr(parser_args, 'description', None),
+                            runs=parser_args.runs,
+                            reset_environment=parser_args.reset_environment
+                        )
+                        written_json_files.extend(files_from_config)
 
                 # Iterate over joint server+benchy option pairs
                 for joint_server, joint_benchy in parse_joint_options(

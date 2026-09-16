@@ -335,7 +335,7 @@ def _build_common_subtitle(datasets: List[DatasetInfo]) -> Optional[str]:
 
     Fields that have the same non-empty value across all datasets are collected
     into the subtitle. Description is listed first, followed by hostname, model,
-    llama version, server options, and options.
+    llama version, constant server options, and fixed options.
 
     Parameters
     ----------
@@ -372,16 +372,6 @@ def _build_common_subtitle(datasets: List[DatasetInfo]) -> Optional[str]:
     if len(versions) == 1:
         version = versions.pop()
         parts.append('b' + version if version.isdigit() else version)
-
-    # Server options
-    server_opts = set(ds.server_options for ds in datasets if ds.server_options)
-    if len(server_opts) == 1:
-        parts.append(server_opts.pop())
-
-    # Options
-    options = set(ds.options for ds in datasets if ds.options)
-    if len(options) == 1:
-        parts.append(options.pop())
 
     # Constant server options
     const_server_opts = set(ds.constant_server_options for ds in datasets
