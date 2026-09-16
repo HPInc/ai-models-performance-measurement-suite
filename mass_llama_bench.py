@@ -179,7 +179,9 @@ def _run_benchmarks_for_install(
 
                     run_warmup(model, bench_install)
 
-                    for extra_options in iter_option_sets(parser_args.extra_options):
+                    for extra_options in iter_option_sets(
+                            parser_args.extra_options,
+                            excluded_short_options=[]):
                         combined_options = combine_options(fixed_options_list, extra_options)
 
                         # display_opts contains only -e options (for convenience_metrics)
@@ -241,7 +243,10 @@ def benchmark_models(parser_args) -> bool:
     # Parse fixed options (if provided) into a list that will be applied to all runs.
     fixed_options_list = []
     if hasattr(parser_args, 'fixed_options') and parser_args.fixed_options:
-        fixed_options_list = create_options_list(parser_args.fixed_options)
+        fixed_options_list = create_options_list(
+            parser_args.fixed_options,
+            excluded_short_options=[]
+        )
         logger.debug('Fixed options: %s', fixed_options_list)
 
     hostname = socket.gethostname()

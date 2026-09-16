@@ -24,6 +24,7 @@ import argparse
 import json as _json
 import logging
 import platform
+import re
 import sys
 import urllib.request
 
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Default sample interval for resource monitoring (seconds)
 DEFAULT_SAMPLE_INTERVAL = 0.2
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 
 
 class BenchmarkArgumentParser(argparse.ArgumentParser):
@@ -47,6 +49,45 @@ class BenchmarkArgumentParser(argparse.ArgumentParser):
         sys.stderr.write(f'\nerror: {message}\n\n')
         self.print_usage(sys.stderr)
         sys.exit(2)
+
+
+def sanitize_filename_part(value: str, max_len: int = 64) -> str:
+    """Sanitize one filename segment for safe cross-platform file output."""
+    if not value:
+        return ''
+
+    cleaned = value.strip().strip('"').strip("'")
+    cleaned = _INVALID_FILENAME_CHARS.sub('_', cleaned)
+    cleaned = cleaned.replace(' ', '_')
+    cleaned = re.sub(r'_+', '_', cleaned)
+    cleaned = cleaned.strip('._')
+
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip('._')
+
+    return cleaned
+
+
+def build_safe_output_filename(
+    parts: List[str],
+    extension: str = '.json',
+    max_filename_len: int = 220,
+    fallback_stem: str = 'benchmark'
+) -> str:
+    """Build a sanitized output filename from descriptive parts."""
+    safe_parts = [sanitize_filename_part(part) for part in parts if part]
+    stem = '_'.join(part for part in safe_parts if part)
+    if not stem:
+        stem = sanitize_filename_part(fallback_stem) or 'benchmark'
+
+    max_stem_len = max_filename_len - len(extension)
+    if max_stem_len > 0 and len(stem) > max_stem_len:
+        stem = stem[:max_stem_len].rstrip('._')
+
+    if not stem:
+        stem = 'benchmark'
+
+    return stem + extension
 
 
 def extract_benchy_convenience_metrics(

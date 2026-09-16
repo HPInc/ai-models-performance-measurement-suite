@@ -118,6 +118,7 @@ try:
         DEFAULT_SAMPLE_INTERVAL,
         BenchmarkArgumentParser,
         POWER_MODE_MAP,
+        build_safe_output_filename as _build_safe_output_filename,
         iter_power_modes as _iter_power_modes,
         extract_benchy_convenience_metrics as _extract_convenience_metrics,
         query_server_model as _query_server_model,
@@ -195,9 +196,7 @@ def _build_output_filename(
     if power_mode_label:
         parts.append(power_mode_label)
 
-    # Join parts with underscore
-    filename = '_'.join(parts) + '.json'
-    return filename
+    return _build_safe_output_filename(parts, fallback_stem='endpoint')
 
 
 # _extract_convenience_metrics is imported from mass_bench_common
@@ -430,7 +429,9 @@ def _run_benchmarks_for_endpoint(
     written_json_files: List[str] = []
 
     # Iterate over all llama-benchy option sets
-    for extra_options in iter_option_sets(extra_benchy_option_sets):
+    for extra_options in iter_option_sets(
+            extra_benchy_option_sets,
+            excluded_short_options=[]):
         combined_benchy_options = combine_options(fixed_benchy_options, extra_options) or []
 
         output_file = run_llama_benchy_with_monitoring(
@@ -482,7 +483,10 @@ def benchmark_endpoints(parser_args) -> bool:
     # Parse fixed benchy options
     fixed_benchy_options = []
     if parser_args.fixed_options:
-        fixed_benchy_options = create_options_list(parser_args.fixed_options)
+        fixed_benchy_options = create_options_list(
+            parser_args.fixed_options,
+            excluded_short_options=[]
+        )
         logger.debug('Fixed benchy options: %s', fixed_benchy_options)
 
     # Get hostname for filenames
